@@ -1,28 +1,62 @@
+// shared/routes.ts
 import { z } from "zod";
 import type { AccountType, BotState, StrategyId, Timeframe, TradingMode } from "./types";
+
+/**
+ * Zod requires tuples for z.enum(values), not (string | union)[].
+ * So we define ALL enum value lists as `as const` tuples.
+ */
+
+export const SUBSCRIPTION_PLANS = ["free", "pro"] as const;
+export const SUBSCRIPTION_STATUSES = ["active", "past_due", "canceled", "inactive"] as const;
+
+export const PROFILE_ROLES = ["user", "admin"] as const;
+
+export const ACCOUNT_TYPES = ["deriv", "mt5"] as const satisfies readonly AccountType[];
+export const ACCOUNT_STATUSES = ["active", "inactive", "error"] as const;
+
+export const STRATEGY_IDS = [
+  "candle_pattern",
+  "one_hour_trend",
+  "trend_confirmation",
+  "scalping_hwr",
+  "trend_pullback",
+  "supply_demand_sweep",
+  "fvg_retracement",
+  "range_mean_reversion",
+] as const satisfies readonly StrategyId[];
+
+export const TIMEFRAMES = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "1d"] as const satisfies readonly Timeframe[];
+
+export const TRADING_MODES = ["backtest", "paper", "live"] as const satisfies readonly TradingMode[];
+export const BOT_STATES = ["stopped", "running"] as const satisfies readonly BotState[];
+
+export const TRADE_SIDES = ["buy", "sell"] as const;
+
+export const RISK_TYPES = ["fixed_stake", "percent_balance"] as const;
 
 export const zUuid = z.string().uuid();
 export const zIsoDate = z.string();
 
 export const zSubscription = z.object({
-  plan: z.enum(["free", "pro"]),
-  status: z.enum(["active", "past_due", "canceled", "inactive"]),
+  plan: z.enum(SUBSCRIPTION_PLANS),
+  status: z.enum(SUBSCRIPTION_STATUSES),
   current_period_end: zIsoDate.nullable(),
 });
 
 export const zProfile = z.object({
   id: z.string(),
   email: z.string().email().nullable(),
-  role: z.enum(["user", "admin"]).default("user"),
+  role: z.enum(PROFILE_ROLES).default("user"),
   created_at: zIsoDate,
 });
 
 export const zAccount = z.object({
   id: zUuid,
   user_id: z.string(),
-  type: z.enum(["deriv", "mt5"] satisfies readonly AccountType[]),
+  type: z.enum(ACCOUNT_TYPES),
   label: z.string().min(1),
-  status: z.enum(["active", "inactive", "error"]).default("active"),
+  status: z.enum(ACCOUNT_STATUSES).default("active"),
   created_at: zIsoDate,
 });
 
@@ -56,23 +90,14 @@ export const zInstrument = z.object({
 });
 
 export const zStrategyMeta = z.object({
-  id: z.enum([
-    "candle_pattern",
-    "one_hour_trend",
-    "trend_confirmation",
-    "scalping_hwr",
-    "trend_pullback",
-    "supply_demand_sweep",
-    "fvg_retracement",
-    "range_mean_reversion",
-  ] satisfies readonly StrategyId[]),
+  id: z.enum(STRATEGY_IDS),
   name: z.string(),
   description: z.string(),
   default_params: z.record(z.any()),
 });
 
 export const zRiskRules = z.object({
-  risk_type: z.enum(["fixed_stake", "percent_balance"]),
+  risk_type: z.enum(RISK_TYPES),
   fixed_stake: z.number().min(0).default(1),
   percent_risk: z.number().min(0).max(5).default(1),
   max_daily_loss: z.number().min(0).default(50),
@@ -98,9 +123,9 @@ export const zBotConfig = z.object({
   id: zUuid.optional(),
   account_id: zUuid,
   symbol: z.string(),
-  timeframe: z.enum(["1m","3m","5m","15m","30m","1h","2h","4h","1d"] satisfies readonly Timeframe[]),
+  timeframe: z.enum(TIMEFRAMES),
   strategy_id: zStrategyMeta.shape.id,
-  mode: z.enum(["backtest","paper","live"] satisfies readonly TradingMode[]),
+  mode: z.enum(TRADING_MODES),
   params: z.record(z.any()).default({}),
   enabled: z.boolean().default(true),
 });
@@ -111,7 +136,7 @@ export const zBotStartReq = z.object({
 });
 
 export const zBotStatus = z.object({
-  state: z.enum(["stopped","running"] satisfies readonly BotState[]),
+  state: z.enum(BOT_STATES),
   name: z.string(),
   started_at: zIsoDate.nullable(),
   heartbeat_at: zIsoDate.nullable(),
@@ -122,11 +147,11 @@ export const zTrade = z.object({
   id: zUuid,
   user_id: z.string(),
   account_id: zUuid,
-  mode: z.enum(["backtest","paper","live"] satisfies readonly TradingMode[]),
+  mode: z.enum(TRADING_MODES),
   symbol: z.string(),
   strategy_id: zStrategyMeta.shape.id,
   timeframe: zBotConfig.shape.timeframe,
-  side: z.enum(["buy","sell"]),
+  side: z.enum(TRADE_SIDES),
   entry: z.number(),
   sl: z.number().nullable(),
   tp: z.number().nullable(),
@@ -175,31 +200,51 @@ export const api = {
     subscription: { path: "/api/subscription", responses: { 200: zSubscription } },
   },
   stripe: {
-    createCheckout: { path: "/api/stripe/create-checkout-session", input: z.object({ return_url: z.string().url() }), responses: { 200: z.object({ url: z.string().url() }) } },
+    createCheckout: {
+      path: "/api/stripe/create-checkout-session",
+      input: z.object({ return_url: z.string().url() }),
+      responses: { 200: z.object({ url: z.string().url() }) },
+    },
     webhook: { path: "/api/stripe/webhook" },
   },
   accounts: {
     list: { path: "/api/accounts", responses: { 200: z.array(zAccount) } },
-    upsertDeriv: { path: "/api/accounts/deriv", input: z.object({ label: z.string().min(1), token: z.string().min(5) }), responses: { 200: zAccount } },
+    upsertDeriv: {
+      path: "/api/accounts/deriv",
+      input: z.object({ label: z.string().min(1), token: z.string().min(5) }),
+      responses: { 200: zAccount },
+    },
     validateDeriv: { path: "/api/accounts/deriv/validate", input: zDerivTokenValidateReq, responses: { 200: zDerivTokenValidateRes } },
-    upsertMt5: { path: "/api/accounts/mt5", input: z.object({ label: z.string().min(1), server: z.string(), login: z.string(), password: z.string() }), responses: { 200: zAccount } },
+    upsertMt5: {
+      path: "/api/accounts/mt5",
+      input: z.object({ label: z.string().min(1), server: z.string(), login: z.string(), password: z.string() }),
+      responses: { 200: zAccount },
+    },
     validateMt5: { path: "/api/accounts/mt5/validate", input: zMt5LoginReq, responses: { 200: zMt5LoginRes } },
   },
   instruments: {
     list: { path: "/api/instruments", responses: { 200: z.array(zInstrument) } },
-    setEnabled: { path: "/api/instruments/enabled", input: z.object({ account_id: zUuid, symbol: z.string(), enabled: z.boolean() }), responses: { 200: z.object({ ok: z.boolean() }) } },
+    setEnabled: {
+      path: "/api/instruments/enabled",
+      input: z.object({ account_id: zUuid, symbol: z.string(), enabled: z.boolean() }),
+      responses: { 200: z.object({ ok: z.boolean() }) },
+    },
     enabledForAccount: { path: "/api/instruments/enabled/:accountId", responses: { 200: z.array(z.object({ symbol: z.string(), enabled: z.boolean() })) } },
   },
   strategies: {
     list: { path: "/api/strategies", responses: { 200: z.array(zStrategyMeta) } },
-    setSettings: { path: "/api/strategies/settings", input: z.object({
-      account_id: zUuid,
-      symbol: z.string(),
-      timeframe: zBotConfig.shape.timeframe,
-      strategy_id: zStrategyMeta.shape.id,
-      params: z.record(z.any()),
-      enabled: z.boolean(),
-    }), responses: { 200: z.object({ ok: z.boolean() }) } },
+    setSettings: {
+      path: "/api/strategies/settings",
+      input: z.object({
+        account_id: zUuid,
+        symbol: z.string(),
+        timeframe: zBotConfig.shape.timeframe,
+        strategy_id: zStrategyMeta.shape.id,
+        params: z.record(z.any()),
+        enabled: z.boolean(),
+      }),
+      responses: { 200: z.object({ ok: z.boolean() }) },
+    },
     settingsForAccount: { path: "/api/strategies/settings/:accountId", responses: { 200: z.array(z.record(z.any())) } },
   },
   bots: {
@@ -209,24 +254,37 @@ export const api = {
   },
   trades: {
     list: { path: "/api/trades", responses: { 200: z.array(zTrade) } },
-    stats: { path: "/api/trades/stats", responses: { 200: z.object({
-      totalProfit: z.number(),
-      winRate: z.number(),
-      totalTrades: z.number(),
-      profitFactor: z.number(),
-      maxDrawdown: z.number(),
-    }) } },
+    stats: {
+      path: "/api/trades/stats",
+      responses: {
+        200: z.object({
+          totalProfit: z.number(),
+          winRate: z.number(),
+          totalTrades: z.number(),
+          profitFactor: z.number(),
+          maxDrawdown: z.number(),
+        }),
+      },
+    },
   },
   journals: {
     list: { path: "/api/journals", responses: { 200: z.array(zJournal) } },
-    create: { path: "/api/journals", input: z.object({
-      trade_id: zUuid.nullable().optional(),
-      title: z.string().min(1),
-      note: z.string().default(""),
-      tags: z.array(z.string()).default([]),
-      screenshot_path: z.string().nullable().optional(),
-    }), responses: { 200: zJournal } },
-    signedUrl: { path: "/api/journals/signed-url", input: z.object({ path: z.string().min(1) }), responses: { 200: z.object({ url: z.string().url() }) } },
+    create: {
+      path: "/api/journals",
+      input: z.object({
+        trade_id: zUuid.nullable().optional(),
+        title: z.string().min(1),
+        note: z.string().default(""),
+        tags: z.array(z.string()).default([]),
+        screenshot_path: z.string().nullable().optional(),
+      }),
+      responses: { 200: zJournal },
+    },
+    signedUrl: {
+      path: "/api/journals/signed-url",
+      input: z.object({ path: z.string().min(1) }),
+      responses: { 200: z.object({ url: z.string().url() }) },
+    },
   },
   backtests: {
     run: { path: "/api/backtests/run", input: zBacktestReq, responses: { 200: zBacktestRes } },
