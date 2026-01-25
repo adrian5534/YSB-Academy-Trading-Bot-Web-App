@@ -2,6 +2,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { Route, Switch, Redirect } from "wouter";
 import { queryClient } from "@/lib/queryClient";
 import { useSession } from "@/hooks/use-auth";
+import { useProfile } from "@/hooks/use-profile";
 import { ToastProvider } from "@/hooks/use-toast";
 import { Toaster } from "@/components/ui/toaster";
 
@@ -36,6 +37,15 @@ function PublicOnly({ children }: { children: JSX.Element }) {
   return children;
 }
 
+function AdminOnly({ children }: { children: JSX.Element }) {
+  const { session, loading } = useSession();
+  const { profile, loading: pload } = useProfile(session?.user?.id);
+  if (loading || pload) return <Loading />;
+  if (!session) return <Redirect to="/auth" />;
+  if (profile?.role !== "admin") return <Redirect to="/" />;
+  return children;
+}
+
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
@@ -59,7 +69,13 @@ export default function App() {
                   <Route path="/backtesting" component={Backtesting} />
                   <Route path="/trades" component={TradesJournal} />
                   <Route path="/settings" component={Settings} />
-                  <Route path="/admin" component={Admin} />
+
+                  <Route path="/admin">
+                    <AdminOnly>
+                      <Admin />
+                    </AdminOnly>
+                  </Route>
+
                   <Route component={NotFound} />
                 </Switch>
               </AppShell>
