@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useLocation } from "wouter";
 import { supabase } from "@/lib/supabase";
-import { useToast } from "../hooks/use-toast";
+import { useToast } from "@/hooks/use-toast";
 
 type Mode = "login" | "signup";
 
@@ -24,10 +24,14 @@ export default function AuthPage() {
     setBusy(true);
     try {
       if (mode === "login") {
-        const { error } = await supabase.auth.signInWithPassword({ email: emailNorm, password });
+        const { error } = await supabase.auth.signInWithPassword({
+          email: emailNorm,
+          password,
+        });
         if (error) throw error;
 
-        setLocation("/"); // ✅ important
+        setPassword("");
+        setLocation("/");
         return;
       }
 
@@ -39,10 +43,15 @@ export default function AuthPage() {
       });
       if (error) throw error;
 
+      setPassword("");
       toast({ title: "Account created", description: "You can now log in." });
       setMode("login");
     } catch (e: any) {
-      toast({ title: "Auth error", description: String(e?.message ?? e), variant: "destructive" });
+      toast({
+        title: "Auth error",
+        description: String(e?.message ?? e),
+        variant: "destructive",
+      });
     } finally {
       setBusy(false);
     }
@@ -50,12 +59,21 @@ export default function AuthPage() {
 
   return (
     <div className="min-h-screen grid place-items-center p-6">
-      <div className="w-full max-w-md rounded-2xl border border-border bg-card p-6 shadow">
+      <form
+        className="w-full max-w-md rounded-2xl border border-border bg-card p-6 shadow"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void submit();
+        }}
+      >
         <div className="text-2xl font-semibold">YSB Academy</div>
         <div className="text-sm text-muted-foreground mb-6">Trading Bot Web App</div>
 
-        <label className="block text-sm mb-1">Email</label>
+        <label className="block text-sm mb-1" htmlFor="email">
+          Email
+        </label>
         <input
+          id="email"
           className="w-full rounded-lg border border-border bg-background px-3 py-2 mb-3"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
@@ -64,8 +82,11 @@ export default function AuthPage() {
           autoComplete="email"
         />
 
-        <label className="block text-sm mb-1">Password</label>
+        <label className="block text-sm mb-1" htmlFor="password">
+          Password
+        </label>
         <input
+          id="password"
           className="w-full rounded-lg border border-border bg-background px-3 py-2 mb-4"
           type="password"
           value={password}
@@ -76,7 +97,7 @@ export default function AuthPage() {
 
         <button
           disabled={busy}
-          onClick={submit}
+          type="submit"
           className="w-full rounded-lg bg-ysbPurple px-3 py-2 font-semibold text-ysbYellow hover:opacity-90 disabled:opacity-50"
         >
           {busy ? "…" : mode === "login" ? "Log in" : "Create account"}
@@ -93,7 +114,7 @@ export default function AuthPage() {
         <div className="mt-5 text-xs text-muted-foreground">
           OAuth-ready: configure providers in Supabase Auth settings.
         </div>
-      </div>
+      </form>
     </div>
   );
 }
