@@ -1,21 +1,16 @@
-// shared/routes.ts
 import { z } from "zod";
 import type { AccountType, BotState, StrategyId, Timeframe, TradingMode } from "./types";
 
-/**
- * Zod requires tuples for z.enum(values), not (string | union)[].
- * So we define ALL enum value lists as `as const` tuples.
- */
+export const zUuid = z.string().uuid();
+export const zIsoDate = z.string();
 
-export const SUBSCRIPTION_PLANS = ["free", "pro"] as const;
-export const SUBSCRIPTION_STATUSES = ["active", "past_due", "canceled", "inactive"] as const;
+// ✅ IMPORTANT: define enums as const tuples (Zod needs tuples, not generic arrays)
+const ACCOUNT_TYPES = ["deriv", "mt5"] as const satisfies readonly AccountType[];
+const BOT_STATES = ["stopped", "running"] as const satisfies readonly BotState[];
+const TRADING_MODES = ["backtest", "paper", "live"] as const satisfies readonly TradingMode[];
+const TIMEFRAMES = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "1d"] as const satisfies readonly Timeframe[];
 
-export const PROFILE_ROLES = ["user", "admin"] as const;
-
-export const ACCOUNT_TYPES = ["deriv", "mt5"] as const satisfies readonly AccountType[];
-export const ACCOUNT_STATUSES = ["active", "inactive", "error"] as const;
-
-export const STRATEGY_IDS = [
+const STRATEGY_IDS = [
   "candle_pattern",
   "one_hour_trend",
   "trend_confirmation",
@@ -26,28 +21,16 @@ export const STRATEGY_IDS = [
   "range_mean_reversion",
 ] as const satisfies readonly StrategyId[];
 
-export const TIMEFRAMES = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "1d"] as const satisfies readonly Timeframe[];
-
-export const TRADING_MODES = ["backtest", "paper", "live"] as const satisfies readonly TradingMode[];
-export const BOT_STATES = ["stopped", "running"] as const satisfies readonly BotState[];
-
-export const TRADE_SIDES = ["buy", "sell"] as const;
-
-export const RISK_TYPES = ["fixed_stake", "percent_balance"] as const;
-
-export const zUuid = z.string().uuid();
-export const zIsoDate = z.string();
-
 export const zSubscription = z.object({
-  plan: z.enum(SUBSCRIPTION_PLANS),
-  status: z.enum(SUBSCRIPTION_STATUSES),
+  plan: z.enum(["free", "pro"]),
+  status: z.enum(["active", "past_due", "canceled", "inactive"]),
   current_period_end: zIsoDate.nullable(),
 });
 
 export const zProfile = z.object({
   id: z.string(),
   email: z.string().email().nullable(),
-  role: z.enum(PROFILE_ROLES).default("user"),
+  role: z.enum(["user", "admin"]).default("user"),
   created_at: zIsoDate,
 });
 
@@ -56,7 +39,7 @@ export const zAccount = z.object({
   user_id: z.string(),
   type: z.enum(ACCOUNT_TYPES),
   label: z.string().min(1),
-  status: z.enum(ACCOUNT_STATUSES).default("active"),
+  status: z.enum(["active", "inactive", "error"]).default("active"),
   created_at: zIsoDate,
 });
 
@@ -97,7 +80,7 @@ export const zStrategyMeta = z.object({
 });
 
 export const zRiskRules = z.object({
-  risk_type: z.enum(RISK_TYPES),
+  risk_type: z.enum(["fixed_stake", "percent_balance"]),
   fixed_stake: z.number().min(0).default(1),
   percent_risk: z.number().min(0).max(5).default(1),
   max_daily_loss: z.number().min(0).default(50),
@@ -151,7 +134,7 @@ export const zTrade = z.object({
   symbol: z.string(),
   strategy_id: zStrategyMeta.shape.id,
   timeframe: zBotConfig.shape.timeframe,
-  side: z.enum(TRADE_SIDES),
+  side: z.enum(["buy", "sell"]),
   entry: z.number(),
   sl: z.number().nullable(),
   tp: z.number().nullable(),
@@ -178,7 +161,7 @@ export const zBacktestReq = z.object({
   symbol: z.string(),
   timeframe: zBotConfig.shape.timeframe,
   params: z.record(z.any()).default({}),
-  csv: z.string().min(1), // raw CSV
+  csv: z.string().min(1),
 });
 
 export const zBacktestRes = z.object({
@@ -280,11 +263,7 @@ export const api = {
       }),
       responses: { 200: zJournal },
     },
-    signedUrl: {
-      path: "/api/journals/signed-url",
-      input: z.object({ path: z.string().min(1) }),
-      responses: { 200: z.object({ url: z.string().url() }) },
-    },
+    signedUrl: { path: "/api/journals/signed-url", input: z.object({ path: z.string().min(1) }), responses: { 200: z.object({ url: z.string().url() }) } },
   },
   backtests: {
     run: { path: "/api/backtests/run", input: zBacktestReq, responses: { 200: zBacktestRes } },

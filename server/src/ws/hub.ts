@@ -1,5 +1,5 @@
 import type { WebSocketServer, WebSocket } from "ws";
-import { WS_EVENTS } from "../../../shared/routes";
+import { WS_EVENTS } from "@ysb/shared/routes";
 
 export type WsPayload = { type: (typeof WS_EVENTS)[keyof typeof WS_EVENTS]; payload: unknown };
 

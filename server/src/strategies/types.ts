@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { StrategyId, Timeframe } from "../../../shared/types";
+import type { StrategyId, Timeframe } from "@ysb/shared/types";
 
 export type Candle = { t: number; o: number; h: number; l: number; c: number; v?: number };
 

@@ -1,18 +1,17 @@
 {
   "name": "ysb-academy-trading-bot-web-app",
   "private": true,
-  "workspaces": [
-    "client",
-    "server",
-    "shared",
-    "worker"
-  ],
+  "workspaces": ["client", "server", "shared", "worker"],
   "scripts": {
     "dev": "concurrently -k \"npm --workspace server run dev\" \"npm --workspace client run dev\"",
     "build": "npm --workspace shared run build && npm --workspace server run build && npm --workspace client run build",
     "start": "npm --workspace server run start"
   },
   "devDependencies": {
-    "concurrently": "^8.2.2"
+    "concurrently": "^8.2.2",
+    "typescript": "^5.7.3"
+  },
+  "overrides": {
+    "esbuild": "0.24.2"
   }
 }
