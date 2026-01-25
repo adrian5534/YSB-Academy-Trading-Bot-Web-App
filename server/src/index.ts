@@ -1,0 +1,75 @@
+import express from "express";
+import cors from "cors";
+import { createServer } from "http";
+import { WebSocketServer } from "ws";
+import { env } from "./env";
+import { registerRoutes } from "./routes";
+import { WsHub } from "./ws/hub";
+import { requireStripe } from "./stripe/stripe";
+import Stripe from "stripe";
+
+const app = express();
+
+// Stripe webhook needs raw body; mount first
+app.post("/api/stripe/webhook", express.raw({ type: "application/json" }), (req, res) => {
+  try {
+    const stripe = requireStripe();
+    const sig = req.headers["stripe-signature"] as string | undefined;
+    if (!sig || !env.STRIPE_WEBHOOK_SECRET) return res.status(400).send("Missing signature");
+    const event = stripe.webhooks.constructEvent(req.body, sig, env.STRIPE_WEBHOOK_SECRET);
+
+    // Handle subscription updates
+    void handleStripeEvent(event).then(() => res.json({ received: true })).catch((e) => {
+      // eslint-disable-next-line no-console
+      console.error(e);
+      res.status(400).send("Webhook error");
+    });
+  } catch (e) {
+    return res.status(400).send("Webhook error");
+  }
+});
+
+// Standard middleware
+app.use(cors({ origin: true, credentials: true }));
+app.use(express.json({ limit: "2mb" }));
+
+app.get("/health", (_req, res) => res.json({ ok: true }));
+
+const server = createServer(app);
+const wss = new WebSocketServer({ server, path: "/ws" });
+const hub = new WsHub(wss);
+
+registerRoutes(app, hub);
+
+server.listen(env.PORT, () => {
+  // eslint-disable-next-line no-console
+  console.log(`Server listening on http://localhost:${env.PORT}`);
+});
+
+import { supabaseAdmin } from "./supabase";
+
+async function handleStripeEvent(event: Stripe.Event) {
+  if (event.type === "customer.subscription.created" || event.type === "customer.subscription.updated" || event.type === "customer.subscription.deleted") {
+    const sub = event.data.object as Stripe.Subscription;
+    const customerId = String(sub.customer);
+    const status = sub.status;
+    const current_period_end = new Date(sub.current_period_end * 1000).toISOString();
+    const plan = status === "active" ? "pro" : "free";
+
+    const { data: row } = await supabaseAdmin
+      .from("subscriptions")
+      .select("user_id")
+      .eq("stripe_customer_id", customerId)
+      .maybeSingle();
+
+    if (!row?.user_id) return;
+
+    await supabaseAdmin.from("subscriptions").update({
+      plan,
+      status: status === "active" ? "active" : "inactive",
+      stripe_subscription_id: sub.id,
+      current_period_end,
+      updated_at: new Date().toISOString(),
+    }).eq("user_id", row.user_id);
+  }
+}
