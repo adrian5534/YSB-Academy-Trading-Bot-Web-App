@@ -1,7 +1,17 @@
 import { Link, useLocation } from "wouter";
 import { supabase } from "@/lib/supabase";
 import { cn } from "@/lib/utils";
-import { LayoutDashboard, KeyRound, Layers, ListChecks, Bot, FlaskConical, NotebookText, Settings, Shield } from "lucide-react";
+import {
+  LayoutDashboard,
+  KeyRound,
+  Layers,
+  ListChecks,
+  Bot,
+  FlaskConical,
+  NotebookText,
+  Settings,
+  Shield,
+} from "lucide-react";
 import { motion } from "framer-motion";
 
 const nav = [
@@ -17,12 +27,28 @@ const nav = [
 ];
 
 export function AppShell({ children }: { children: React.ReactNode }) {
-  const [loc] = useLocation();
+  const [loc, setLocation] = useLocation();
+
+  const onSignOut = async () => {
+    await supabase.auth.signOut({ scope: "local" });
+
+    // Safety: ensure token cleared even if storage adapter changes
+    for (const key of Object.keys(localStorage)) {
+      if (key.startsWith("sb-") && key.endsWith("-auth-token")) {
+        localStorage.removeItem(key);
+      }
+    }
+
+    setLocation("/auth");
+  };
+
   return (
     <div className="min-h-screen grid grid-cols-[260px_1fr]">
       <aside className="border-r border-border bg-card p-4">
         <div className="flex items-center gap-2 mb-6">
-          <div className="h-9 w-9 rounded-lg bg-ysbPurple grid place-items-center text-ysbYellow font-bold">Y</div>
+          <div className="h-9 w-9 rounded-lg bg-ysbPurple grid place-items-center text-ysbYellow font-bold">
+            Y
+          </div>
           <div>
             <div className="font-semibold">YSB Academy</div>
             <div className="text-xs text-muted-foreground">Trading Bot</div>
@@ -35,7 +61,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             const Icon = n.icon;
             return (
               <Link key={n.href} href={n.href}>
-                <a className={cn("block rounded-lg px-3 py-2 text-sm hover:bg-muted/40", active ? "bg-muted/60" : "")}>
+                <a
+                  className={cn(
+                    "block rounded-lg px-3 py-2 text-sm hover:bg-muted/40",
+                    active ? "bg-muted/60" : ""
+                  )}
+                >
                   <span className="inline-flex items-center gap-2">
                     <Icon size={16} className={active ? "text-ysbYellow" : "text-muted-foreground"} />
                     {active ? (
@@ -53,14 +84,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </nav>
 
         <button
-          onClick={() => supabase.auth.signOut()}
+          onClick={onSignOut}
           className="mt-6 w-full rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground"
         >
           Sign out
         </button>
 
         <div className="mt-6 text-xs text-muted-foreground">
-          Brand: <span className="text-ysbPurple">#6F2898</span> / <span className="text-ysbYellow">#f3ec4e</span>
+          Brand: <span className="text-ysbPurple">#6F2898</span> /{" "}
+          <span className="text-ysbYellow">#f3ec4e</span>
         </div>
       </aside>
 
