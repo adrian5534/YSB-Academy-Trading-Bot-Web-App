@@ -39,6 +39,9 @@ interface State {
 }
 
 const toastTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
+const listeners: Array<(state: State) => void> = [];
+
+let memoryState: State = { toasts: [] };
 
 function dispatch(action: Action) {
   memoryState = reducer(memoryState, action);
@@ -91,15 +94,14 @@ export const reducer = (state: State, action: Action): State => {
   }
 };
 
-const listeners: Array<(state: State) => void> = [];
-let memoryState: State = { toasts: [] };
-
 type Toast = Omit<ToasterToast, "id">;
 
 function toast(props: Toast) {
   const id = genId();
 
-  const update = (next: ToasterToast) => dispatch({ type: "UPDATE_TOAST", toast: { ...next, id } });
+  const update = (next: Partial<Toast>) =>
+    dispatch({ type: "UPDATE_TOAST", toast: { ...next, id } });
+
   const dismiss = () => dispatch({ type: "DISMISS_TOAST", toastId: id });
 
   dispatch({
@@ -133,6 +135,14 @@ function useToast() {
     toast,
     dismiss: (toastId?: string) => dispatch({ type: "DISMISS_TOAST", toastId }),
   };
+}
+
+/**
+ * App.tsx imports ToastProvider; keep this minimal.
+ * No JSX here because this file is .ts (Netlify esbuild will fail on JSX in .ts).
+ */
+export function ToastProvider({ children }: React.PropsWithChildren): React.ReactElement {
+  return React.createElement(React.Fragment, null, children);
 }
 
 export { useToast, toast };
