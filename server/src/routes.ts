@@ -53,6 +53,17 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
     }));
   }));
 
+  router.post(
+  "/api/auth/logout-all",
+  requireUser,
+  asyncRoute(async (req: AuthedRequest, res) => {
+    // Revokes ALL sessions across devices for this user
+    const { error } = await supabaseAdmin.auth.admin.signOut(req.user.id);
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json({ ok: true });
+    })
+  );
+
   // ===== Accounts =====
   router.get(api.accounts.list.path, requireUser, asyncRoute(async (req: AuthedRequest, res) => {
     const { data, error } = await supabaseAdmin.from("accounts").select("id,user_id,type,label,status,created_at").eq("user_id", req.user.id).order("created_at", { ascending: false });
