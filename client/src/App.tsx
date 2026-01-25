@@ -40,6 +40,7 @@ function PublicOnly({ children }: { children: JSX.Element }) {
 function AdminOnly({ children }: { children: JSX.Element }) {
   const { session, loading } = useSession();
   const { profile, loading: pload } = useProfile(session?.user?.id);
+
   if (loading || pload) return <Loading />;
   if (!session) return <Redirect to="/auth" />;
   if (profile?.role !== "admin") return <Redirect to="/" />;
@@ -57,7 +58,8 @@ export default function App() {
             </PublicOnly>
           </Route>
 
-          <Route path="/">
+          {/* ✅ No path here = match anything else */}
+          <Route>
             <Private>
               <AppShell>
                 <Switch>
@@ -81,8 +83,6 @@ export default function App() {
               </AppShell>
             </Private>
           </Route>
-
-          <Route component={NotFound} />
         </Switch>
 
         <Toaster />
