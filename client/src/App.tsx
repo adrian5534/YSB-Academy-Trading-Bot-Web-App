@@ -4,6 +4,7 @@ import { queryClient } from "@/lib/queryClient";
 import { useSession } from "@/hooks/use-auth";
 import { ToastProvider } from "@/hooks/use-toast";
 import { Toaster } from "@/components/ui/toaster";
+
 import AuthPage from "@/pages/AuthPage";
 import Dashboard from "@/pages/Dashboard";
 import Accounts from "@/pages/Accounts";
@@ -17,10 +18,21 @@ import Admin from "@/pages/Admin";
 import NotFound from "@/pages/not-found";
 import { AppShell } from "@/components/AppShell";
 
+function Loading() {
+  return <div className="min-h-screen grid place-items-center text-muted-foreground">Loading…</div>;
+}
+
 function Private({ children }: { children: JSX.Element }) {
   const { session, loading } = useSession();
-  if (loading) return <div className="min-h-screen grid place-items-center text-muted-foreground">Loading…</div>;
+  if (loading) return <Loading />;
   if (!session) return <Redirect to="/auth" />;
+  return children;
+}
+
+function PublicOnly({ children }: { children: JSX.Element }) {
+  const { session, loading } = useSession();
+  if (loading) return <Loading />;
+  if (session) return <Redirect to="/" />;
   return children;
 }
 
@@ -29,7 +41,12 @@ export default function App() {
     <QueryClientProvider client={queryClient}>
       <ToastProvider>
         <Switch>
-          <Route path="/auth" component={AuthPage} />
+          <Route path="/auth">
+            <PublicOnly>
+              <AuthPage />
+            </PublicOnly>
+          </Route>
+
           <Route path="/">
             <Private>
               <AppShell>
@@ -48,8 +65,10 @@ export default function App() {
               </AppShell>
             </Private>
           </Route>
+
           <Route component={NotFound} />
         </Switch>
+
         <Toaster />
       </ToastProvider>
     </QueryClientProvider>
