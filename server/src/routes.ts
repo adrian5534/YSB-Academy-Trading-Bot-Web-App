@@ -1,15 +1,15 @@
 import express from "express";
 import { api, zRiskRules } from "@ysb/shared/routes";
-import { supabaseAdmin } from "./supabase";
-import { requireUser, type AuthedRequest } from "./middleware/auth";
-import { requireProForPaperLive } from "./middleware/subscription";
-import { DerivClient } from "./deriv/DerivClient";
-import { encryptJson } from "./crypto/secrets";
+import { supabaseAdmin } from "./supabase.js";
+import { requireUser, type AuthedRequest } from "./middleware/auth.js";
+import { requireProForPaperLive } from "./middleware/subscription.js";
+import { DerivClient } from "./deriv/DerivClient.js";
+import { encryptJson } from "./crypto/secrets.js";
 import { strategies } from "./strategies";
-import { BotManager } from "./bots/BotManager";
-import type { WsHub } from "./ws/hub";
-import { parseCsv, runBacktest } from "./backtests/runBacktest";
-import { requireStripe } from "./stripe/stripe";
+import { BotManager } from "./bots/BotManager.js";
+import type { WsHub } from "./ws/hub.js";
+import { parseCsv, runBacktest } from "./backtests/runBacktest.js";
+import { requireStripe } from "./stripe/stripe.js";
 import { env } from "./env";
 
 type AnyFn = (req: any, res: any, next: any) => any;
