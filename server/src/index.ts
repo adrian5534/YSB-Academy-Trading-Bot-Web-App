@@ -29,6 +29,18 @@ app.post("/api/stripe/webhook", express.raw({ type: "application/json" }), (req,
   }
 });
 
+app.use((err: any, _req: any, res: any, _next: any) => {
+  console.error("API_ERROR:", err);
+
+  // Zod validation errors often look like this
+  if (err?.name === "ZodError") {
+    return res.status(400).json({ error: "Invalid request", details: err.errors });
+  }
+
+  return res.status(500).json({ error: "Internal Server Error", message: err?.message ?? String(err) });
+});
+
+
 // Standard middleware
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: "2mb" }));
