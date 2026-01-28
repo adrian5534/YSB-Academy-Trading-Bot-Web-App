@@ -5,6 +5,7 @@ import { useSession } from "@/hooks/use-auth";
 import { useProfile } from "@/hooks/use-profile";
 import { ToastProvider } from "@/hooks/use-toast";
 import { Toaster } from "@/components/ui/toaster";
+import { RuntimeEventsProvider } from "@/context/runtime-events";
 
 import AuthPage from "@/pages/AuthPage";
 import Dashboard from "@/pages/Dashboard";
@@ -51,42 +52,44 @@ export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <ToastProvider>
-        <Switch>
-          <Route path="/auth">
-            <PublicOnly>
-              <AuthPage />
-            </PublicOnly>
-          </Route>
+        <RuntimeEventsProvider>
+          <Switch>
+            <Route path="/auth">
+              <PublicOnly>
+                <AuthPage />
+              </PublicOnly>
+            </Route>
 
-          {/* ✅ No path here = match anything else */}
-          <Route>
-            <Private>
-              <AppShell>
-                <Switch>
-                  <Route path="/" component={Dashboard} />
-                  <Route path="/accounts" component={Accounts} />
-                  <Route path="/instruments" component={Instruments} />
-                  <Route path="/strategies" component={Strategies} />
-                  <Route path="/bot" component={BotCenter} />
-                  <Route path="/backtesting" component={Backtesting} />
-                  <Route path="/trades" component={TradesJournal} />
-                  <Route path="/settings" component={Settings} />
+            <Route>
+              <Private>
+                <AppShell>
+                  <Switch>
+                    <Route path="/" component={Dashboard} />
+                    <Route path="/accounts" component={Accounts} />
+                    <Route path="/instruments" component={Instruments} />
+                    <Route path="/strategies" component={Strategies} />
+                    <Route path="/bot" component={BotCenter} />
+                    <Route path="/backtesting" component={Backtesting} />
+                    <Route path="/trades" component={TradesJournal} />
+                    <Route path="/settings" component={Settings} />
 
-                  <Route path="/admin">
-                    <AdminOnly>
-                      <Admin />
-                    </AdminOnly>
-                  </Route>
+                    <Route path="/admin">
+                      <AdminOnly>
+                        <Admin />
+                      </AdminOnly>
+                    </Route>
 
-                  <Route component={NotFound} />
-                </Switch>
-              </AppShell>
-            </Private>
-          </Route>
-        </Switch>
+                    <Route component={NotFound} />
+                  </Switch>
+                </AppShell>
+              </Private>
+            </Route>
+          </Switch>
 
-        <Toaster />
+          <Toaster />
+        </RuntimeEventsProvider>
       </ToastProvider>
     </QueryClientProvider>
   );
 }
+
