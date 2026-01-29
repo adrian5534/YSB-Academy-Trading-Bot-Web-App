@@ -571,9 +571,7 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
           metadata: { user_id: r.user.id },
         });
         customerId = customer.id;
-        await supabaseAdmin
-          .from("subscriptions")
-          .upsert({ user_id: r.user.id, stripe_customer_id: customerId }, { onConflict: "user_id" });
+        await supabaseAdmin.from("subscriptions").upsert({ user_id: r.user.id, stripe_customer_id: customerId }, { onConflict: "user_id" });
       }
 
       const plan = (req.body?.plan as "1m" | "2m" | "3m" | undefined) ?? "1m";
@@ -582,8 +580,14 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
         "2m": env.STRIPE_PRICE_PRO_2M,
         "3m": env.STRIPE_PRICE_PRO_3M,
       };
-      const priceId = priceByPlan[plan];
-      if (!priceId) throw new Error("Stripe price for selected plan not configured");
+      const priceId = priceByPlan[plan] || env.STRIPE_PRICE_PRO_MONTHLY;
+
+      if (!priceId) {
+        return res.status(400).json({
+          error: "Stripe price for selected plan not configured",
+          details: { plan, required_env: [`STRIPE_PRICE_PRO_${plan.toUpperCase()}`, "or STRIPE_PRICE_PRO_MONTHLY"] },
+        });
+      }
 
       const session = await stripe.checkout.sessions.create({
         mode: "subscription",
