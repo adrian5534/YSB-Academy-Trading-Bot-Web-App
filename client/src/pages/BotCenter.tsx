@@ -15,13 +15,9 @@ export default function BotCenter() {
   const startBot = useStartBot();
   const stopBot = useStopBot();
 
-  // ✅ global runtime WS state (persists across tabs/pages)
   const { logs, connected, clearLogs } = useRuntimeEvents();
 
-  // show full account list (was filtering to deriv only)
   const availableAccounts = useMemo(() => accounts ?? [], [accounts]);
-  const derivAccounts = useMemo(() => availableAccounts.filter((a) => a.type === "deriv"), [availableAccounts]);
-
   const [accountId, setAccountId] = useState<string>("");
   const [symbol, setSymbol] = useState("R_100");
   const [timeframe, setTimeframe] = useState("1m");
@@ -32,8 +28,7 @@ export default function BotCenter() {
 
   useEffect(() => {
     if (!accountId && availableAccounts.length) {
-      // prefer a deriv account as default, otherwise pick the first available
-      const firstDeriv = availableAccounts.find((a) => a.type === "deriv");
+      const firstDeriv = availableAccounts.find((a: any) => a.type === "deriv");
       setAccountId(firstDeriv?.id ?? availableAccounts[0].id);
     }
   }, [accountId, availableAccounts]);
@@ -44,7 +39,6 @@ export default function BotCenter() {
         toast({ title: "Upgrade required", description: "Paper/Live trading requires Pro plan.", variant: "destructive" });
         return;
       }
-
       const payload = api.bots.start.input.parse({
         name: "YSB Bot",
         configs: [
@@ -59,7 +53,6 @@ export default function BotCenter() {
           },
         ],
       });
-
       await startBot.mutateAsync(payload);
       toast({ title: "Bot started", description: "Streaming logs via WebSocket." });
     } catch (e: any) {
@@ -83,23 +76,32 @@ export default function BotCenter() {
         body: JSON.stringify({ return_url: window.location.href }),
       });
       const j = await res.json().catch(() => ({}));
-      if (j?.url) {
-        window.open(j.url, "_blank");
-      } else {
-        throw new Error("No checkout URL returned");
-      }
+      if (j?.url) window.open(j.url, "_blank");
+      else throw new Error("No checkout URL returned");
     } catch (e: any) {
       toast({ title: "Checkout error", description: String(e?.message ?? e), variant: "destructive" });
     }
   };
 
+  const manageBilling = async () => {
+    try {
+      const res = await apiFetch("/api/stripe/portal", {
+        method: "POST",
+        body: JSON.stringify({ return_url: window.location.href }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (j?.url) window.open(j.url, "_blank");
+      else throw new Error("No portal URL returned");
+    } catch (e: any) {
+      toast({ title: "Billing portal error", description: String(e?.message ?? e), variant: "destructive" });
+    }
+  };
+
   return (
     <div className="space-y-6">
-      <div>
-        <div className="text-2xl font-semibold">Bot Control Center</div>
-        <div className="text-sm text-muted-foreground">
-          Subscription: <span className="text-foreground">{sub?.plan ?? "free"}</span> • Server-enforced gating for Paper/Live.
-        </div>
+      <div className="text-2xl font-semibold">Bot Control Center</div>
+      <div className="text-sm text-muted-foreground">
+        Subscription: <span className="text-foreground">{sub?.plan ?? "free"}</span>
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
@@ -107,12 +109,8 @@ export default function BotCenter() {
           <div className="font-semibold">Runner</div>
 
           <label className="block text-sm">Account</label>
-          <select
-            className="w-full rounded-lg border border-border bg-background px-3 py-2"
-            value={accountId}
-            onChange={(e) => setAccountId(e.target.value)}
-          >
-            {availableAccounts.map((a) => (
+          <select className="w-full rounded-lg border border-border bg-background px-3 py-2" value={accountId} onChange={(e) => setAccountId(e.target.value)}>
+            {availableAccounts.map((a: any) => (
               <option key={a.id} value={a.id}>
                 {a.label} {a.type ? `(${a.type})` : ""}
               </option>
@@ -122,19 +120,11 @@ export default function BotCenter() {
           <div className="grid grid-cols-3 gap-2">
             <div>
               <label className="block text-sm">Symbol</label>
-              <input
-                className="w-full rounded-lg border border-border bg-background px-3 py-2"
-                value={symbol}
-                onChange={(e) => setSymbol(e.target.value)}
-              />
+              <input className="w-full rounded-lg border border-border bg-background px-3 py-2" value={symbol} onChange={(e) => setSymbol(e.target.value)} />
             </div>
             <div>
               <label className="block text-sm">Timeframe</label>
-              <select
-                className="w-full rounded-lg border border-border bg-background px-3 py-2"
-                value={timeframe}
-                onChange={(e) => setTimeframe(e.target.value)}
-              >
+              <select className="w-full rounded-lg border border-border bg-background px-3 py-2" value={timeframe} onChange={(e) => setTimeframe(e.target.value)}>
                 {["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "1d"].map((t) => (
                   <option key={t} value={t}>
                     {t}
@@ -145,11 +135,7 @@ export default function BotCenter() {
             <div>
               <label className="block text-sm">Mode</label>
               <div className="flex items-center gap-2">
-                <select
-                  className="w-full rounded-lg border border-border bg-background px-3 py-2"
-                  value={mode}
-                  onChange={(e) => setMode(e.target.value as any)}
-                >
+                <select className="w-full rounded-lg border border-border bg-background px-3 py-2" value={mode} onChange={(e) => setMode(e.target.value as any)}>
                   <option value="backtest">Backtest</option>
                   <option value="paper" disabled={!isPro}>
                     Paper{!isPro ? " (Pro only)" : ""}
@@ -159,34 +145,21 @@ export default function BotCenter() {
                   </option>
                 </select>
                 {!isPro ? (
-                  <button
-                    type="button"
-                    onClick={upgradeToPro}
-                    className="ml-1 rounded-lg bg-ysbPurple px-2 py-1 text-xs font-semibold text-ysbYellow hover:opacity-90"
-                  >
+                  <button type="button" onClick={upgradeToPro} className="ml-1 rounded-lg bg-ysbPurple px-2 py-1 text-xs font-semibold text-ysbYellow hover:opacity-90">
                     Upgrade
                   </button>
-                ) : null}
+                ) : (
+                  <button type="button" onClick={manageBilling} className="ml-1 rounded-lg border border-border px-2 py-1 text-xs hover:bg-muted">
+                    Manage billing
+                  </button>
+                )}
               </div>
             </div>
           </div>
 
           <label className="block text-sm">Strategy</label>
-          <select
-            className="w-full rounded-lg border border-border bg-background px-3 py-2"
-            value={strategyId}
-            onChange={(e) => setStrategyId(e.target.value)}
-          >
-            {[
-              "candle_pattern",
-              "one_hour_trend",
-              "trend_confirmation",
-              "scalping_hwr",
-              "trend_pullback",
-              "supply_demand_sweep",
-              "fvg_retracement",
-              "range_mean_reversion",
-            ].map((s) => (
+          <select className="w-full rounded-lg border border-border bg-background px-3 py-2" value={strategyId} onChange={(e) => setStrategyId(e.target.value)}>
+            {["candle_pattern", "one_hour_trend", "trend_confirmation", "scalping_hwr", "trend_pullback", "supply_demand_sweep", "fvg_retracement", "range_mean_reversion"].map((s) => (
               <option key={s} value={s}>
                 {s}
               </option>
@@ -194,45 +167,25 @@ export default function BotCenter() {
           </select>
 
           <div className="flex items-center gap-2">
-            <button
-              onClick={start}
-              disabled={!isPro && (mode === "paper" || mode === "live")}
-              className={`rounded-lg px-3 py-2 font-semibold ${
-                !isPro && (mode === "paper" || mode === "live")
-                  ? "border border-border bg-muted text-muted-foreground cursor-not-allowed"
-                  : "bg-ysbPurple text-ysbYellow hover:opacity-90"
-              }`}
-            >
+            <button onClick={start} disabled={!isPro && (mode === "paper" || mode === "live")} className={`rounded-lg px-3 py-2 font-semibold ${!isPro && (mode === "paper" || mode === "live") ? "border border-border bg-muted text-muted-foreground cursor-not-allowed" : "bg-ysbPurple text-ysbYellow hover:opacity-90"}`}>
               Start
             </button>
-            <button
-              onClick={stop}
-              className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground"
-            >
+            <button onClick={stop} className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground">
               Stop
             </button>
-
             <div className="ml-auto text-xs text-muted-foreground">
-              WS: <span className="text-foreground">{connected ? "connected" : "disconnected"}</span> • Status:{" "}
-              <span className="text-foreground">{status?.state ?? "stopped"}</span>
+              WS: <span className="text-foreground">{connected ? "connected" : "disconnected"}</span> • Status: <span className="text-foreground">{status?.state ?? "stopped"}</span>
             </div>
           </div>
-
-          <div className="text-xs text-muted-foreground">Note: Paper/Live require Pro plan. Server returns 402 if blocked.</div>
         </div>
 
         <div className="rounded-2xl border border-border bg-card p-4">
           <div className="flex items-center justify-between mb-2">
             <div className="font-semibold">Live logs</div>
-            <button
-              onClick={clearLogs}
-              className="rounded-lg border border-border px-3 py-1 text-xs text-muted-foreground hover:text-foreground"
-              type="button"
-            >
+            <button onClick={clearLogs} className="rounded-lg border border-border px-3 py-1 text-xs text-muted-foreground hover:text-foreground" type="button">
               Clear
             </button>
           </div>
-
           <div className="h-96 overflow-auto rounded-lg border border-border bg-background p-2 font-mono text-xs text-muted-foreground">
             {logs.slice(0, 200).map((l, i) => (
               <div key={i} className="whitespace-pre-wrap">

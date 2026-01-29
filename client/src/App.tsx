@@ -17,6 +17,7 @@ import Backtesting from "@/pages/Backtesting";
 import TradesJournal from "@/pages/TradesJournal";
 import Settings from "@/pages/Settings";
 import Admin from "@/pages/Admin";
+import Plans from "@/pages/Plans";
 import NotFound from "@/pages/not-found";
 import { AppShell } from "@/components/AppShell";
 
@@ -69,6 +70,7 @@ export default function App() {
                     <Route path="/instruments" component={Instruments} />
                     <Route path="/strategies" component={Strategies} />
                     <Route path="/bot" component={BotCenter} />
+                    <Route path="/plans" component={Plans} />
                     <Route path="/backtesting" component={Backtesting} />
                     <Route path="/trades" component={TradesJournal} />
                     <Route path="/settings" component={Settings} />

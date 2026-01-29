@@ -29,6 +29,12 @@ async function getRole(userId: string): Promise<"user" | "admin"> {
   return (data?.role ?? "user") as any;
 }
 
+function getOrigin(req: any) {
+  const proto = (req.headers["x-forwarded-proto"] as string) || "http";
+  const host = req.headers.host as string;
+  return `${proto}://${host}`;
+}
+
 export function registerRoutes(app: express.Express, hub: WsHub) {
   const router = express.Router();
   const botManager = new BotManager(hub);
@@ -397,7 +403,15 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
         dd = Math.max(dd, peak - eq);
       }
 
-      res.json(api.trades.stats.responses[200].parse({ totalProfit, winRate, totalTrades: profits.length, profitFactor, maxDrawdown: dd }));
+      res.json(
+        api.trades.stats.responses[200].parse({
+          totalProfit,
+          winRate,
+          totalTrades: profits.length,
+          profitFactor,
+          maxDrawdown: dd,
+        }),
+      );
     }),
   );
 
@@ -506,7 +520,7 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
       const body = api.backtests.run.input.parse(req.body);
 
       const candles = parseCsv(body.csv);
-      const out = runBacktest({
+      const out = await runBacktest({
         userId: r.user.id,
         symbol: body.symbol,
         timeframe: body.timeframe,
@@ -524,38 +538,88 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
         metrics: out.metrics,
       });
 
-      res.json(api.backtests.run.responses[200].parse({ ok: true, metrics: out.metrics, sample_trades: out.trades.slice(0, 10) }));
+      res.json(
+        api.backtests.run.responses[200].parse({
+          ok: true,
+          metrics: out.metrics,
+          sample_trades: out.trades.slice(0, 10),
+        }),
+      );
     }),
   );
 
-  // ===== Stripe =====
+  // ===== Stripe: Checkout + Portal =====
   router.post(
     api.stripe.createCheckout.path,
     requireUser,
     asyncRoute(async (req, res) => {
       const r = req as AuthedRequest;
-      const body = api.stripe.createCheckout.input.parse(req.body);
+      // Parse only known fields; accept optional plan from raw body
+      const body = api.stripe.createCheckout.input.parse({ return_url: req.body?.return_url });
       const stripe = requireStripe();
 
-      const { data: sub } = await supabaseAdmin.from("subscriptions").select("stripe_customer_id").eq("user_id", r.user.id).maybeSingle();
-      let customerId = sub?.stripe_customer_id ?? null;
+      const { data: sub } = await supabaseAdmin
+        .from("subscriptions")
+        .select("stripe_customer_id")
+        .eq("user_id", r.user.id)
+        .maybeSingle();
 
+      let customerId = sub?.stripe_customer_id ?? null;
       if (!customerId) {
-        const customer = await stripe.customers.create({ email: r.user.email ?? undefined, metadata: { user_id: r.user.id } });
+        const customer = await stripe.customers.create({
+          email: r.user.email ?? undefined,
+          metadata: { user_id: r.user.id },
+        });
         customerId = customer.id;
-        await supabaseAdmin.from("subscriptions").update({ stripe_customer_id: customerId }).eq("user_id", r.user.id);
+        await supabaseAdmin
+          .from("subscriptions")
+          .upsert({ user_id: r.user.id, stripe_customer_id: customerId }, { onConflict: "user_id" });
       }
+
+      const plan = (req.body?.plan as "1m" | "2m" | "3m" | undefined) ?? "1m";
+      const priceByPlan: Record<"1m" | "2m" | "3m", string | undefined> = {
+        "1m": env.STRIPE_PRICE_PRO_1M,
+        "2m": env.STRIPE_PRICE_PRO_2M,
+        "3m": env.STRIPE_PRICE_PRO_3M,
+      };
+      const priceId = priceByPlan[plan];
+      if (!priceId) throw new Error("Stripe price for selected plan not configured");
 
       const session = await stripe.checkout.sessions.create({
         mode: "subscription",
         customer: customerId,
-        line_items: [{ price: env.STRIPE_PRICE_PRO_MONTHLY, quantity: 1 }],
+        line_items: [{ price: priceId, quantity: 1 }],
         success_url: body.return_url,
         cancel_url: body.return_url,
         allow_promotion_codes: true,
       });
 
       res.json({ url: session.url });
+    }),
+  );
+
+  // Billing Portal
+  router.post(
+    "/api/stripe/portal",
+    requireUser,
+    asyncRoute(async (req, res) => {
+      const stripe = requireStripe();
+      const r = req as AuthedRequest;
+      const returnUrl = (req.body?.return_url as string) || getOrigin(req);
+
+      const { data: subRow, error } = await supabaseAdmin
+        .from("subscriptions")
+        .select("stripe_customer_id")
+        .eq("user_id", r.user.id)
+        .maybeSingle();
+      if (error || !subRow?.stripe_customer_id) throw new Error("Stripe customer missing");
+
+      const portal = await stripe.billingPortal.sessions.create({
+        customer: subRow.stripe_customer_id,
+        return_url: returnUrl,
+      });
+
+      res.json({ url: portal.url });
     }),
   );
 
