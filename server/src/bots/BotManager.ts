@@ -115,7 +115,12 @@ export class BotManager {
     const { data: acc, error: accErr } = await supabaseAdmin.from("accounts").select("type,secrets").eq("id", cfg.account_id).maybeSingle();
     if (accErr) throw accErr;
     if (!acc) throw new Error("account missing");
-    if (acc.type !== "deriv") return;
+
+    if (acc.type !== "deriv") {
+      // log why we're skipping (helps debugging when a non-deriv account is selected)
+      this.hub.log("skipping non-deriv account", { accountId: cfg.account_id, accountType: acc.type });
+      return;
+    }
 
     const secrets = acc.secrets as any;
     const enc = secrets?.deriv_token_enc;
@@ -184,6 +189,7 @@ export class BotManager {
       // Backtest: run simulation and stream logs to hub, persist & emit resulting trades
       try {
         this.hub.log("starting backtest", { symbol: cfg.symbol, timeframe: cfg.timeframe, accountId: cfg.account_id });
+
         const result = await runBacktest(
           {
             userId: bot.userId,
@@ -194,9 +200,9 @@ export class BotManager {
             candles,
           },
           (msg) => {
-            // forward progress to WS clients
+            // forward progress to WS clients and preserve timestamp
             try {
-              this.hub.log(msg.message, msg.meta ?? {});
+              this.hub.log(msg.message, { ...(msg.meta ?? {}), ts: msg.ts });
             } catch {
               /* ignore */
             }
