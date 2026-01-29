@@ -11,6 +11,7 @@ import {
   NotebookText,
   Settings,
   Shield,
+  Crown,
 } from "lucide-react";
 import { motion } from "framer-motion";
 import { useSession } from "@/hooks/use-auth";
@@ -25,6 +26,7 @@ const nav = [
   { href: "/bot", label: "Bot Control", icon: Bot },
   { href: "/backtesting", label: "Backtesting", icon: FlaskConical },
   { href: "/trades", label: "Trades & Journal", icon: NotebookText },
+  { href: "/plans", label: "Plans", icon: Crown },
   { href: "/settings", label: "Settings", icon: Settings },
   { href: "/admin", label: "Admin", icon: Shield },
 ];
