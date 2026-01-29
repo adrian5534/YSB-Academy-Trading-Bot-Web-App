@@ -18,7 +18,9 @@ export default function BotCenter() {
   // ✅ global runtime WS state (persists across tabs/pages)
   const { logs, connected, clearLogs } = useRuntimeEvents();
 
-  const derivAccounts = useMemo(() => (accounts ?? []).filter((a) => a.type === "deriv"), [accounts]);
+  // show full account list (was filtering to deriv only)
+  const availableAccounts = useMemo(() => accounts ?? [], [accounts]);
+  const derivAccounts = useMemo(() => availableAccounts.filter((a) => a.type === "deriv"), [availableAccounts]);
 
   const [accountId, setAccountId] = useState<string>("");
   const [symbol, setSymbol] = useState("R_100");
@@ -29,8 +31,12 @@ export default function BotCenter() {
   const isPro = sub?.plan === "pro";
 
   useEffect(() => {
-    if (!accountId && derivAccounts.length) setAccountId(derivAccounts[0].id);
-  }, [accountId, derivAccounts]);
+    if (!accountId && availableAccounts.length) {
+      // prefer a deriv account as default, otherwise pick the first available
+      const firstDeriv = availableAccounts.find((a) => a.type === "deriv");
+      setAccountId(firstDeriv?.id ?? availableAccounts[0].id);
+    }
+  }, [accountId, availableAccounts]);
 
   const start = async () => {
     try {
@@ -106,9 +112,9 @@ export default function BotCenter() {
             value={accountId}
             onChange={(e) => setAccountId(e.target.value)}
           >
-            {(derivAccounts ?? []).map((a) => (
+            {availableAccounts.map((a) => (
               <option key={a.id} value={a.id}>
-                {a.label}
+                {a.label} {a.type ? `(${a.type})` : ""}
               </option>
             ))}
           </select>
