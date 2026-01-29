@@ -47,7 +47,13 @@ export class BotManager {
   getStatus(userId: string) {
     const bot = this.running.get(userId);
     return bot
-      ? { state: bot.state, name: bot.name, started_at: bot.started_at, heartbeat_at: bot.heartbeat_at, active_configs: bot.configs.filter((c) => c.enabled).length }
+      ? {
+          state: bot.state,
+          name: bot.name,
+          started_at: bot.started_at,
+          heartbeat_at: bot.heartbeat_at,
+          active_configs: bot.configs.filter((c) => c.enabled).length,
+        }
       : { state: "stopped", name: "YSB Bot", started_at: null, heartbeat_at: null, active_configs: 0 };
   }
 
@@ -62,6 +68,10 @@ export class BotManager {
       configs: configs.map((c) => ({ ...c, id: uuidv4() })),
     };
     this.running.set(userId, bot);
+
+    // Debug: show what we will run
+    console.log("[BotManager.start] bot created", { userId, configs: bot.configs });
+    this.hub.log("bot.configs", { userId, configs: bot.configs });
 
     bot.timer = setInterval(() => {
       void this.tick(bot).catch((e) => this.hub.log("tick error", { error: String(e) }));
@@ -111,13 +121,16 @@ export class BotManager {
   }
 
   private async runConfig(bot: Running, cfg: BotConfig) {
-    // Load deriv token for account
-    const { data: acc, error: accErr } = await supabaseAdmin.from("accounts").select("type,secrets").eq("id", cfg.account_id).maybeSingle();
+    // Load account to get type + token
+    const { data: acc, error: accErr } = await supabaseAdmin
+      .from("accounts")
+      .select("type,secrets")
+      .eq("id", cfg.account_id)
+      .maybeSingle();
     if (accErr) throw accErr;
     if (!acc) throw new Error("account missing");
 
     if (acc.type !== "deriv") {
-      // log why we're skipping (helps debugging when a non-deriv account is selected)
       this.hub.log("skipping non-deriv account", { accountId: cfg.account_id, accountType: acc.type });
       return;
     }
@@ -138,7 +151,6 @@ export class BotManager {
       this.hub.log("Failed to decrypt Deriv token", { error: String(e) });
       return;
     }
-
     if (!token) {
       this.hub.log("Deriv token missing after decrypt", { accountId: cfg.account_id });
       return;
@@ -156,37 +168,8 @@ export class BotManager {
       v: Number(c.volume ?? 0),
     }));
 
-    const strat = getStrategy(cfg.strategy_id);
-    const ctx: StrategyContext = { symbol: cfg.symbol, timeframe: cfg.timeframe as any, now: new Date() };
-    const signal = strat.generateSignal(candles, ctx, cfg.params);
-
-    if (!signal.side) return;
-    if (signal.confidence < 0.5) return;
-
-    const gate = await canOpenTrade(bot.userId);
-    if (!gate.ok) {
-      this.hub.log("risk block", { reason: gate.reason, symbol: cfg.symbol });
-      return;
-    }
-
-    // stake estimation (Deriv balance not fetched here; use placeholder)
-    const rules = await getRiskRules(bot.userId);
-    const stake = computeStake(rules, 1000);
-
-    if (cfg.mode === "paper") {
-      await this.paperTrade(bot.userId, cfg, signal, stake);
-    } else if (cfg.mode === "live") {
-      // NOTE: live trading flow is intentionally minimal. Extend contract types per instrument.
-      this.hub.log("live mode requested (minimal implementation)", { symbol: cfg.symbol });
-      try {
-        const contractType = signal.side === "buy" ? "CALL" : "PUT";
-        const res = await deriv.buyRiseFall(cfg.symbol, stake, 5, "m", contractType);
-        this.hub.trade({ mode: "live", symbol: cfg.symbol, res });
-      } catch (e) {
-        this.hub.log("live buy error", { error: String(e) });
-      }
-    } else {
-      // Backtest: run simulation and stream logs to hub, persist & emit resulting trades
+    // IMPORTANT: backtest should run unconditionally, not gated on a live signal
+    if (cfg.mode === "backtest") {
       try {
         this.hub.log("starting backtest", { symbol: cfg.symbol, timeframe: cfg.timeframe, accountId: cfg.account_id });
 
@@ -200,7 +183,6 @@ export class BotManager {
             candles,
           },
           (msg) => {
-            // forward progress to WS clients and preserve timestamp
             try {
               this.hub.log(msg.message, { ...(msg.meta ?? {}), ts: msg.ts });
             } catch {
@@ -210,7 +192,7 @@ export class BotManager {
           },
         );
 
-        // persist trades (override account_id with real account)
+        // persist backtest trades
         if (result?.trades?.length) {
           const toInsert = result.trades.map((t: any) => ({
             ...t,
@@ -233,6 +215,38 @@ export class BotManager {
       } catch (e) {
         this.hub.log("backtest error", { error: String(e) });
       }
+      return; // don't run live/paper flow after backtest
+    }
+
+    // For paper/live modes, generate a current signal and apply risk gates
+    const strat = getStrategy(cfg.strategy_id);
+    const ctx: StrategyContext = { symbol: cfg.symbol, timeframe: cfg.timeframe as any, now: new Date() };
+    const signal = strat.generateSignal(candles, ctx, cfg.params);
+
+    if (!signal.side) return;
+    if (signal.confidence < 0.5) return;
+
+    const gate = await canOpenTrade(bot.userId);
+    if (!gate.ok) {
+      this.hub.log("risk block", { reason: gate.reason, symbol: cfg.symbol });
+      return;
+    }
+
+    // stake estimation (Deriv balance not fetched here; use placeholder)
+    const rules = await getRiskRules(bot.userId);
+    const stake = computeStake(rules, 1000);
+
+    if (cfg.mode === "paper") {
+      await this.paperTrade(bot.userId, cfg, signal, stake);
+    } else if (cfg.mode === "live") {
+      this.hub.log("live mode requested (minimal implementation)", { symbol: cfg.symbol });
+      try {
+        const contractType = signal.side === "buy" ? "CALL" : "PUT";
+        const res = await deriv.buyRiseFall(cfg.symbol, stake, 5, "m", contractType);
+        this.hub.trade({ mode: "live", symbol: cfg.symbol, res });
+      } catch (e) {
+        this.hub.log("live buy error", { error: String(e) });
+      }
     }
   }
 
@@ -250,7 +264,7 @@ export class BotManager {
     let exit = fill;
     if (win && tp != null) exit = tp;
     if (!win && sl != null) exit = sl;
-    const profit = signal.side === "buy" ? (exit - fill) : (fill - exit);
+    const profit = signal.side === "buy" ? exit - fill : fill - exit;
 
     const { data, error } = await supabaseAdmin
       .from("trades")
