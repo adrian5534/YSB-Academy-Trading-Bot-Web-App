@@ -5,6 +5,7 @@ import { useSubscription } from "@/hooks/use-subscription";
 import { useToast } from "@/hooks/use-toast";
 import { api } from "@shared/routes";
 import { useRuntimeEvents } from "@/context/runtime-events";
+import { apiFetch } from "@/lib/api";
 
 export default function BotCenter() {
   const { toast } = useToast();
@@ -25,12 +26,19 @@ export default function BotCenter() {
   const [strategyId, setStrategyId] = useState("trend_confirmation");
   const [mode, setMode] = useState<"backtest" | "paper" | "live">("paper");
 
+  const isPro = sub?.plan === "pro";
+
   useEffect(() => {
     if (!accountId && derivAccounts.length) setAccountId(derivAccounts[0].id);
   }, [accountId, derivAccounts]);
 
   const start = async () => {
     try {
+      if (!isPro && (mode === "paper" || mode === "live")) {
+        toast({ title: "Upgrade required", description: "Paper/Live trading requires Pro plan.", variant: "destructive" });
+        return;
+      }
+
       const payload = api.bots.start.input.parse({
         name: "YSB Bot",
         configs: [
@@ -59,6 +67,23 @@ export default function BotCenter() {
       toast({ title: "Bot stopped" });
     } catch (e: any) {
       toast({ title: "Stop failed", description: String(e.message ?? e), variant: "destructive" });
+    }
+  };
+
+  const upgradeToPro = async () => {
+    try {
+      const res = await apiFetch("/api/stripe/create-checkout-session", {
+        method: "POST",
+        body: JSON.stringify({ return_url: window.location.href }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (j?.url) {
+        window.open(j.url, "_blank");
+      } else {
+        throw new Error("No checkout URL returned");
+      }
+    } catch (e: any) {
+      toast({ title: "Checkout error", description: String(e?.message ?? e), variant: "destructive" });
     }
   };
 
@@ -113,15 +138,30 @@ export default function BotCenter() {
             </div>
             <div>
               <label className="block text-sm">Mode</label>
-              <select
-                className="w-full rounded-lg border border-border bg-background px-3 py-2"
-                value={mode}
-                onChange={(e) => setMode(e.target.value as any)}
-              >
-                <option value="backtest">Backtest</option>
-                <option value="paper">Paper</option>
-                <option value="live">Live</option>
-              </select>
+              <div className="flex items-center gap-2">
+                <select
+                  className="w-full rounded-lg border border-border bg-background px-3 py-2"
+                  value={mode}
+                  onChange={(e) => setMode(e.target.value as any)}
+                >
+                  <option value="backtest">Backtest</option>
+                  <option value="paper" disabled={!isPro}>
+                    Paper{!isPro ? " (Pro only)" : ""}
+                  </option>
+                  <option value="live" disabled={!isPro}>
+                    Live{!isPro ? " (Pro only)" : ""}
+                  </option>
+                </select>
+                {!isPro ? (
+                  <button
+                    type="button"
+                    onClick={upgradeToPro}
+                    className="ml-1 rounded-lg bg-ysbPurple px-2 py-1 text-xs font-semibold text-ysbYellow hover:opacity-90"
+                  >
+                    Upgrade
+                  </button>
+                ) : null}
+              </div>
             </div>
           </div>
 
@@ -150,7 +190,12 @@ export default function BotCenter() {
           <div className="flex items-center gap-2">
             <button
               onClick={start}
-              className="rounded-lg bg-ysbPurple px-3 py-2 font-semibold text-ysbYellow hover:opacity-90"
+              disabled={!isPro && (mode === "paper" || mode === "live")}
+              className={`rounded-lg px-3 py-2 font-semibold ${
+                !isPro && (mode === "paper" || mode === "live")
+                  ? "border border-border bg-muted text-muted-foreground cursor-not-allowed"
+                  : "bg-ysbPurple text-ysbYellow hover:opacity-90"
+              }`}
             >
               Start
             </button>

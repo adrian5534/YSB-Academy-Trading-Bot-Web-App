@@ -204,7 +204,7 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
         market_display_name: s.market_display_name,
         subgroup: s.subgroup,
         subgroup_display_name: s.subgroup_display_name,
-        exchange_is_open: s.exchange_is_open === 1 || s.exchange_is_open === true,
+        exchange_is_open: Boolean(s.exchange_is_open),
       }));
       res.json(api.instruments.list.responses[200].parse(mapped));
     }),
