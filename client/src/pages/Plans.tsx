@@ -1,7 +1,6 @@
 import { useSubscription } from "@/hooks/use-subscription";
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api";
-import { Link } from "wouter";
 
 type PlanKey = "1m" | "2m" | "3m";
 
@@ -59,28 +58,6 @@ export default function Plans() {
             </button>
           </div>
         ))}
-      </div>
-
-      <div className="text-sm text-muted-foreground">
-        Need to manage your subscription?{" "}
-        <button
-          className="underline underline-offset-4"
-          onClick={async () => {
-            try {
-              const res = await apiFetch("/api/stripe/portal", {
-                method: "POST",
-                body: JSON.stringify({ return_url: window.location.href }),
-              });
-              const j = await res.json().catch(() => ({}));
-              if (j?.url) window.location.href = j.url;
-            } catch {
-              /* noop */
-            }
-          }}
-        >
-          Open billing portal
-        </button>{" "}
-        or <Link href="/bot" className="underline underline-offset-4">go back</Link>.
       </div>
     </div>
   );
