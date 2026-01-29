@@ -320,6 +320,7 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
     requireUser,
     requireProForPaperLive,
     asyncRoute(async (req, res) => {
+      console.log("[api.bots.start] incoming", { user: (req as any).user?.id, body: req.body?.configs?.[0]?.mode });
       const r = req as AuthedRequest;
       const body = api.bots.start.input.parse(req.body);
 
