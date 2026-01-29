@@ -18,23 +18,45 @@ export function parseCsv(csv: string): Candle[] {
   }));
 }
 
-export function runBacktest(args: {
-  userId: string;
-  symbol: string;
-  timeframe: string;
-  strategyId: string;
-  params: any;
-  candles: Candle[];
-}) {
+export async function runBacktest(
+  args: {
+    userId: string;
+    symbol: string;
+    timeframe: string;
+    strategyId: string;
+    params: any;
+    candles: Candle[];
+  },
+  onLog?: (msg: { message: string; ts?: string; meta?: any }) => void | Promise<void>,
+) {
   const strat = getStrategy(args.strategyId);
   const trades: any[] = [];
   let equity = 0;
   let peak = 0;
   let maxDd = 0;
 
+  const emit = (message: string, meta: any = {}) => {
+    try {
+      onLog?.({ message, ts: new Date().toISOString(), meta });
+    } catch {
+      /* swallow logging errors */
+    }
+  };
+
+  emit(`backtest started for ${args.symbol} ${args.timeframe} — ${args.candles.length} candles`);
+
+  // main backtest loop
   for (let i = 30; i < args.candles.length; i++) {
+    // periodic progress
+    if (i % 100 === 0) emit(`processed ${i}/${args.candles.length} candles`, { processed: i });
+
     const slice = args.candles.slice(0, i + 1);
-    const sig = strat.generateSignal(slice, { symbol: args.symbol, timeframe: args.timeframe as any, now: new Date(slice[i].t * 1000) }, args.params);
+    const sig = strat.generateSignal(
+      slice,
+      { symbol: args.symbol, timeframe: args.timeframe as any, now: new Date(slice[i].t * 1000) },
+      args.params,
+    );
+
     if (!sig.side || sig.confidence < 0.5) continue;
 
     const entry = sig.entry ?? slice[i].c;
@@ -46,20 +68,33 @@ export function runBacktest(args: {
     for (let j = i + 1; j < Math.min(args.candles.length, i + 10); j++) {
       const c = args.candles[j];
       if (sig.side === "buy") {
-        if (c.l <= sl) { exit = sl; break; }
-        if (c.h >= tp) { exit = tp; break; }
+        if (c.l <= sl) {
+          exit = sl;
+          break;
+        }
+        if (c.h >= tp) {
+          exit = tp;
+          break;
+        }
       } else {
-        if (c.h >= sl) { exit = sl; break; }
-        if (c.l <= tp) { exit = tp; break; }
+        if (c.h >= sl) {
+          exit = sl;
+          break;
+        }
+        if (c.l <= tp) {
+          exit = tp;
+          break;
+        }
       }
       exit = c.c;
     }
-    const profit = sig.side === "buy" ? (exit - entry) : (entry - exit);
+
+    const profit = sig.side === "buy" ? exit - entry : entry - exit;
     equity += profit;
     peak = Math.max(peak, equity);
     maxDd = Math.max(maxDd, peak - equity);
 
-    trades.push({
+    const trade = {
       id: uuidv4(),
       user_id: args.userId,
       account_id: uuidv4(),
@@ -76,7 +111,10 @@ export function runBacktest(args: {
       opened_at: new Date(slice[i].t * 1000).toISOString(),
       closed_at: new Date(slice[Math.min(args.candles.length - 1, i + 1)].t * 1000).toISOString(),
       meta: { confidence: sig.confidence, reason: sig.reason },
-    });
+    };
+
+    trades.push(trade);
+    emit(`trade ${trades.length} -> ${sig.side} ${profit.toFixed(6)}`, { trade });
   }
 
   const wins = trades.filter((t) => (t.profit ?? 0) > 0);
@@ -87,7 +125,7 @@ export function runBacktest(args: {
   const expectancy = trades.length ? equity / trades.length : 0;
   const winRate = trades.length ? wins.length / trades.length : 0;
 
-  return {
+  const result = {
     trades,
     metrics: {
       trades: trades.length,
@@ -98,4 +136,7 @@ export function runBacktest(args: {
       pnl: equity,
     },
   };
+
+  emit(`backtest complete — ${trades.length} trades, pnl=${equity.toFixed(6)}`, { metrics: result.metrics });
+  return result;
 }
