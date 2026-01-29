@@ -5,6 +5,7 @@ import type { StrategyContext } from "../strategies/types";
 import { canOpenTrade, computeStake, getRiskRules } from "../risk/riskEngine";
 import { supabaseAdmin } from "../supabase";
 import type { WsHub } from "../ws/hub";
+import { runBacktest } from "../backtests/runBacktest";
 
 type BotConfig = {
   id: string;
@@ -100,7 +101,6 @@ export class BotManager {
     return token;
   }
 
-
   private async tick(bot: Running) {
     bot.heartbeat_at = new Date().toISOString();
     this.hub.status(this.getStatus(bot.userId));
@@ -139,7 +139,7 @@ export class BotManager {
       return;
     }
 
-const deriv = await this.getDerivClient(cfg.account_id, token);
+    const deriv = await this.getDerivClient(cfg.account_id, token);
     const granSec = timeframeToSec(cfg.timeframe);
     const raw = await deriv.candles(cfg.symbol, granSec, 120);
     const candles = raw.map((c: any) => ({
@@ -181,7 +181,52 @@ const deriv = await this.getDerivClient(cfg.account_id, token);
         this.hub.log("live buy error", { error: String(e) });
       }
     } else {
-      // backtest handled by separate endpoint
+      // Backtest: run simulation and stream logs to hub, persist & emit resulting trades
+      try {
+        this.hub.log("starting backtest", { symbol: cfg.symbol, timeframe: cfg.timeframe, accountId: cfg.account_id });
+        const result = await runBacktest(
+          {
+            userId: bot.userId,
+            symbol: cfg.symbol,
+            timeframe: cfg.timeframe,
+            strategyId: cfg.strategy_id,
+            params: cfg.params,
+            candles,
+          },
+          (msg) => {
+            // forward progress to WS clients
+            try {
+              this.hub.log(msg.message, msg.meta ?? {});
+            } catch {
+              /* ignore */
+            }
+            return Promise.resolve();
+          },
+        );
+
+        // persist trades (override account_id with real account)
+        if (result?.trades?.length) {
+          const toInsert = result.trades.map((t: any) => ({
+            ...t,
+            account_id: cfg.account_id,
+            mode: "backtest",
+          }));
+          try {
+            const { data: inserted, error: insertErr } = await supabaseAdmin.from("trades").insert(toInsert).select("*");
+            if (insertErr) {
+              this.hub.log("backtest persist error", { error: String(insertErr) });
+            } else {
+              for (const tr of inserted ?? []) this.hub.trade(tr);
+            }
+          } catch (e) {
+            this.hub.log("backtest persist exception", { error: String(e) });
+          }
+        }
+
+        this.hub.log("backtest finished", { metrics: result?.metrics ?? {} });
+      } catch (e) {
+        this.hub.log("backtest error", { error: String(e) });
+      }
     }
   }
 
