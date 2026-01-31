@@ -29,29 +29,38 @@ app.post("/api/stripe/webhook", express.raw({ type: "application/json" }), (req,
   }
 });
 
-app.use((err: any, _req: any, res: any, _next: any) => {
-  console.error("API_ERROR:", err);
-
-  // Zod validation errors often look like this
-  if (err?.name === "ZodError") {
-    return res.status(400).json({ error: "Invalid request", details: err.errors });
-  }
-
-  return res.status(500).json({ error: "Internal Server Error", message: err?.message ?? String(err) });
-});
-
-
 // Standard middleware
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: "2mb" }));
 
+// Basic request logger to debug 404s
+app.use((req, _res, next) => {
+  // eslint-disable-next-line no-console
+  console.log("[REQ]", req.method, req.originalUrl);
+  next();
+});
+
+// keep a simple health path for diagnostics
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
 const server = createServer(app);
 const wss = new WebSocketServer({ server, path: "/ws" });
 const hub = new WsHub(wss);
 
+// register all routes (routes include /api/health and stripe endpoints)
 registerRoutes(app, hub);
+
+// Error handler - must be after routes
+app.use((err: any, _req: any, res: any, _next: any) => {
+  console.error("API_ERROR:", err);
+
+  // Zod validation errors
+  if (err?.name === "ZodError") {
+    return res.status(400).json({ error: "Invalid request", details: err.errors });
+  }
+
+  return res.status(500).json({ error: "Internal Server Error", message: err?.message ?? String(err) });
+});
 
 server.listen(env.PORT, () => {
   // eslint-disable-next-line no-console
@@ -61,12 +70,16 @@ server.listen(env.PORT, () => {
 import { supabaseAdmin } from "./supabase";
 
 async function handleStripeEvent(event: Stripe.Event) {
-  if (event.type === "customer.subscription.created" || event.type === "customer.subscription.updated" || event.type === "customer.subscription.deleted") {
+  if (
+    event.type === "customer.subscription.created" ||
+    event.type === "customer.subscription.updated" ||
+    event.type === "customer.subscription.deleted"
+  ) {
     const sub = event.data.object as Stripe.Subscription;
     const customerId = String(sub.customer);
     const status = sub.status;
-    const current_period_end = new Date(sub.current_period_end * 1000).toISOString();
-    const plan = status === "active" ? "pro" : "free";
+    const current_period_end = sub.current_period_end ? new Date(Number(sub.current_period_end) * 1000).toISOString() : null;
+    const plan = status === "active" || status === "trialing" ? "pro" : "free";
 
     const { data: row } = await supabaseAdmin
       .from("subscriptions")
@@ -76,12 +89,15 @@ async function handleStripeEvent(event: Stripe.Event) {
 
     if (!row?.user_id) return;
 
-    await supabaseAdmin.from("subscriptions").update({
-      plan,
-      status: status === "active" ? "active" : "inactive",
-      stripe_subscription_id: sub.id,
-      current_period_end,
-      updated_at: new Date().toISOString(),
-    }).eq("user_id", row.user_id);
+    await supabaseAdmin
+      .from("subscriptions")
+      .update({
+        plan,
+        status: status === "active" || status === "trialing" ? "active" : "inactive",
+        stripe_subscription_id: sub.id,
+        current_period_end,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("user_id", row.user_id);
   }
 }
