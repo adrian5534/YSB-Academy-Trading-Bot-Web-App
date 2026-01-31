@@ -42,6 +42,9 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
   // Health check (Render can ping this)
   router.get("/api/health", (_req, res) => res.json({ ok: true }));
 
+  // Stripe debug ping
+  router.get("/api/stripe/_ping", (_req, res) => res.json({ ok: true }));
+
   // ===== Auth =====
   router.get(
     api.auth.me.path,
@@ -548,9 +551,9 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
     }),
   );
 
-  // ===== Stripe: Checkout + Portal =====
+  // ===== Stripe: Checkout (hardcoded path) =====
   router.post(
-    api.stripe.createCheckout.path,
+    "/api/stripe/create-checkout",
     requireUser,
     asyncRoute(async (req, res) => {
       const r = req as AuthedRequest;
