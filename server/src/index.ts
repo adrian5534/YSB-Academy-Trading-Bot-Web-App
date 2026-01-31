@@ -7,6 +7,7 @@ import { registerRoutes } from "./routes";
 import { WsHub } from "./ws/hub";
 import { requireStripe } from "./stripe/stripe";
 import Stripe from "stripe";
+import { supabaseAdmin } from "./supabase";
 
 const app = express();
 
@@ -19,12 +20,16 @@ app.post("/api/stripe/webhook", express.raw({ type: "application/json" }), (req,
     const event = stripe.webhooks.constructEvent(req.body, sig, env.STRIPE_WEBHOOK_SECRET);
 
     // Handle subscription updates
-    void handleStripeEvent(event).then(() => res.json({ received: true })).catch((e) => {
-      // eslint-disable-next-line no-console
-      console.error(e);
-      res.status(400).send("Webhook error");
-    });
+    void handleStripeEvent(event)
+      .then(() => res.json({ received: true }))
+      .catch((e) => {
+        // eslint-disable-next-line no-console
+        console.error("Webhook handler error:", e);
+        res.status(400).send("Webhook error");
+      });
   } catch (e) {
+    // eslint-disable-next-line no-console
+    console.error("Webhook constructEvent error:", e);
     return res.status(400).send("Webhook error");
   }
 });
@@ -67,37 +72,95 @@ server.listen(env.PORT, () => {
   console.log(`Server listening on http://localhost:${env.PORT}`);
 });
 
-import { supabaseAdmin } from "./supabase";
-
 async function handleStripeEvent(event: Stripe.Event) {
+  const stripe = requireStripe();
+
+  // checkout.session.completed: update DB immediately from the subscription
+  if (event.type === "checkout.session.completed") {
+    try {
+      const session = event.data.object as Stripe.Checkout.Session;
+      const subscriptionId = typeof session.subscription === "string" ? session.subscription : (session.subscription as any)?.id;
+      const customerId = typeof session.customer === "string" ? session.customer : (session.customer as any)?.id;
+
+      // If subscription id present, fetch subscription to get canonical status and period end
+      if (subscriptionId) {
+        const sub = await stripe.subscriptions.retrieve(subscriptionId);
+        const status = sub.status;
+        const current_period_end = sub.current_period_end ? new Date(Number(sub.current_period_end) * 1000).toISOString() : null;
+        const plan = status === "active" || status === "trialing" ? "pro" : "free";
+
+        // Try to find the user by customer id first
+        if (customerId) {
+          const { data: row } = await supabaseAdmin
+            .from("subscriptions")
+            .select("user_id")
+            .eq("stripe_customer_id", customerId)
+            .maybeSingle();
+
+          if (row?.user_id) {
+            await supabaseAdmin
+              .from("subscriptions")
+              .update({
+                plan,
+                status: status === "active" || status === "trialing" ? "active" : "inactive",
+                stripe_subscription_id: subscriptionId,
+                current_period_end,
+                updated_at: new Date().toISOString(),
+              })
+              .eq("user_id", row.user_id);
+            // eslint-disable-next-line no-console
+            console.log(`[stripe] updated subscription for user ${row.user_id} via checkout.session.completed`);
+            return;
+          }
+        }
+
+        // Fallback: if no subscription row matched by customer, try to upsert by subscription metadata (if you store user_id there)
+        // (left intentionally minimal; extend if you store user_id in Stripe metadata)
+      }
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error("handleStripeEvent (checkout.session.completed) error:", e);
+    }
+    return;
+  }
+
+  // subscription lifecycle events
   if (
     event.type === "customer.subscription.created" ||
     event.type === "customer.subscription.updated" ||
     event.type === "customer.subscription.deleted"
   ) {
-    const sub = event.data.object as Stripe.Subscription;
-    const customerId = String(sub.customer);
-    const status = sub.status;
-    const current_period_end = sub.current_period_end ? new Date(Number(sub.current_period_end) * 1000).toISOString() : null;
-    const plan = status === "active" || status === "trialing" ? "pro" : "free";
+    try {
+      const sub = event.data.object as Stripe.Subscription;
+      const customerId = String(sub.customer);
+      const status = sub.status;
+      const current_period_end = sub.current_period_end ? new Date(Number(sub.current_period_end) * 1000).toISOString() : null;
+      const plan = status === "active" || status === "trialing" ? "pro" : "free";
 
-    const { data: row } = await supabaseAdmin
-      .from("subscriptions")
-      .select("user_id")
-      .eq("stripe_customer_id", customerId)
-      .maybeSingle();
+      const { data: row } = await supabaseAdmin
+        .from("subscriptions")
+        .select("user_id")
+        .eq("stripe_customer_id", customerId)
+        .maybeSingle();
 
-    if (!row?.user_id) return;
+      if (!row?.user_id) return;
 
-    await supabaseAdmin
-      .from("subscriptions")
-      .update({
-        plan,
-        status: status === "active" || status === "trialing" ? "active" : "inactive",
-        stripe_subscription_id: sub.id,
-        current_period_end,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("user_id", row.user_id);
+      await supabaseAdmin
+        .from("subscriptions")
+        .update({
+          plan,
+          status: status === "active" || status === "trialing" ? "active" : "inactive",
+          stripe_subscription_id: sub.id,
+          current_period_end,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("user_id", row.user_id);
+
+      // eslint-disable-next-line no-console
+      console.log(`[stripe] subscription event ${event.type} handled for user ${row.user_id}`);
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error("handleStripeEvent (subscription event) error:", e);
+    }
   }
 }
