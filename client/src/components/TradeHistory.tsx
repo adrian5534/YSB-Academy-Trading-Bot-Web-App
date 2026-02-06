@@ -1,28 +1,119 @@
 import { useTrades } from "@/hooks/use-trades";
 
+function formatTime(iso?: string | null) {
+  if (!iso) return "--:--:--";
+  const d = new Date(iso);
+  return d.toLocaleTimeString(undefined, { hour12: false });
+}
+
+function formatPrice(v: any) {
+  const n = Number(v);
+  if (!isFinite(n)) return "-";
+  return n.toFixed(2);
+}
+
+function formatProfit(v: any) {
+  const n = Number(v ?? 0);
+  const p = Math.abs(n).toFixed(2);
+  return `${n > 0 ? "+$" : n < 0 ? "-$" : "$"}${p}`;
+}
+
 export function TradeHistory() {
   const { data: trades, isLoading } = useTrades();
-
-  if (isLoading) return <div className="rounded-2xl border border-border bg-card p-4 text-muted-foreground">Loading…</div>;
+  const rows = (trades ?? []).slice(0, 50);
 
   return (
-    <div className="rounded-2xl border border-border bg-card p-4">
-      <div className="font-semibold mb-2">Trade History</div>
-      <div className="space-y-2">
-        {(trades ?? []).slice(0, 12).map((t) => (
-          <div key={t.id} className="rounded-lg border border-border bg-background px-3 py-2">
-            <div className="flex items-center justify-between">
-              <div className="font-medium">
-                {t.symbol} • {t.side.toUpperCase()}
-              </div>
-              <div className="text-xs text-muted-foreground">{t.mode}</div>
-            </div>
-            <div className="text-xs text-muted-foreground">{t.strategy_id} • {t.timeframe}</div>
-            <div className="text-xs text-muted-foreground">PnL: {t.profit ?? 0}</div>
-          </div>
-        ))}
-        {(trades ?? []).length === 0 ? <div className="text-sm text-muted-foreground">No trades yet.</div> : null}
+    <div className="rounded-2xl border border-border bg-card">
+      <div className="flex items-center gap-2 px-4 py-3 border-b border-border">
+        <div className="h-2 w-2 rounded-full bg-yellow-300/80 shadow-[0_0_12px_rgba(250,204,21,0.6)]" />
+        <h2 className="font-semibold text-lg">Recent Trades</h2>
       </div>
+
+      {isLoading ? (
+        <div className="p-4 text-muted-foreground">Loading…</div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-sm">
+            <thead className="text-muted-foreground">
+              <tr className="border-b border-border/70">
+                <th className="px-4 py-3 text-left font-medium">Time</th>
+                <th className="px-4 py-3 text-left font-medium">Symbol</th>
+                <th className="px-4 py-3 text-left font-medium">Type</th>
+                <th className="px-4 py-3 text-left font-medium">Entry</th>
+                <th className="px-4 py-3 text-left font-medium">Exit</th>
+                <th className="px-4 py-3 text-left font-medium">Profit</th>
+                <th className="px-4 py-3 text-left font-medium">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((t) => {
+                // Field fallbacks so we don't break if names differ
+                const side = String(t.side ?? "").toUpperCase(); // "CALL" | "PUT"
+                const entry =
+                  t.entry_price ?? t.entry ?? t.open_price ?? t.open ?? null;
+                const exit =
+                  t.exit_price ?? t.exit ?? t.close_price ?? t.close ?? null;
+                const profitNum = Number(t.profit ?? 0);
+                const won = profitNum > 0;
+
+                return (
+                  <tr key={t.id} className="border-b border-border/40">
+                    <td className="px-4 py-3">{formatTime(t.opened_at ?? t.created_at)}</td>
+                    <td className="px-4 py-3 font-medium">{t.symbol ?? "-"}</td>
+                    <td className="px-4 py-3">
+                      <span
+                        className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs ${
+                          side === "CALL"
+                            ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+                            : "border-rose-500/30 bg-rose-500/10 text-rose-300"
+                        }`}
+                      >
+                        <span
+                          className={`h-1.5 w-1.5 rounded-full ${
+                            side === "CALL" ? "bg-emerald-400" : "bg-rose-400"
+                          }`}
+                        />
+                        {side || "-"}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 tabular-nums">{formatPrice(entry)}</td>
+                    <td className="px-4 py-3 tabular-nums">{formatPrice(exit)}</td>
+                    <td
+                      className={`px-4 py-3 tabular-nums font-semibold ${
+                        profitNum > 0
+                          ? "text-emerald-400"
+                          : profitNum < 0
+                          ? "text-rose-400"
+                          : "text-muted-foreground"
+                      }`}
+                    >
+                      {formatProfit(profitNum)}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span
+                        className={`inline-flex items-center justify-center rounded-md px-2 py-1 text-xs font-medium ${
+                          won
+                            ? "bg-emerald-500/15 text-emerald-300"
+                            : "bg-rose-500/15 text-rose-300"
+                        }`}
+                      >
+                        {won ? "WON" : "LOST"}
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
+              {rows.length === 0 && (
+                <tr>
+                  <td className="px-4 py-6 text-muted-foreground" colSpan={7}>
+                    No trades yet.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
