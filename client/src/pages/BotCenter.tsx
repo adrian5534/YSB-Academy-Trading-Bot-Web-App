@@ -21,15 +21,12 @@ export default function BotCenter() {
   const [accountId, setAccountId] = useState<string>("");
   const [symbol, setSymbol] = useState("R_100");
   const [timeframe, setTimeframe] = useState("1m");
-  const [strategyId, setStrategyId] = useState("RSI");
+  const [strategyId, setStrategyId] = useState("trend_confirmation");
   const [mode, setMode] = useState<"backtest" | "paper" | "live">("paper");
   const [params, setParams] = useState({
     stake: 250,
-    rsiPeriod: 8,
-    overbought: 70,
-    oversold: 30,
     duration: 5,
-    duration_unit: "m" as "m" | "h" | "d",
+    duration_unit: "m" as "m" | "h" | "d" | "t",
   });
   const [showSettings, setShowSettings] = useState(false);
 
@@ -48,19 +45,6 @@ export default function BotCenter() {
       return p;
     });
   }, [timeframe]);
-
-  // strategy defaults when switching strategies (prevents RSI params persisting everywhere)
-  useEffect(() => {
-    setParams((p) => {
-      const base = { stake: p.stake ?? 250, duration: p.duration ?? 5, duration_unit: p.duration_unit ?? (timeframe === "1s" ? "t" : "m") } as any;
-      if (strategyId.toLowerCase().includes("rsi")) {
-        return { ...base, rsiPeriod: p.rsiPeriod ?? 8, overbought: p.overbought ?? 70, oversold: p.oversold ?? 30 };
-      }
-      // Non‑RSI strategies: drop RSI‑specific fields so UI doesn’t show stale data
-      const { rsiPeriod, overbought, oversold, ...rest } = p;
-      return { ...base, ...rest };
-    });
-  }, [strategyId, timeframe]);
 
   // load saved settings for this combo
   useEffect(() => {
@@ -115,7 +99,7 @@ export default function BotCenter() {
             timeframe,
             strategy_id: strategyId,
             mode,
-            params, // includes stake + duration
+            params, // stake + duration only
             enabled: true,
           },
         ],
@@ -186,16 +170,10 @@ export default function BotCenter() {
             </div>
           </div>
 
+          {/* Summary (generic) */}
           <div className="rounded-xl border border-border bg-background p-3">
-            <div className="text-sm text-muted-foreground mb-2">RSI Settings</div>
+            <div className="text-sm text-muted-foreground mb-2">Strategy Settings</div>
             <div className="flex flex-wrap items-center gap-x-6 gap-y-2 font-mono">
-              {strategyId.toLowerCase().includes("rsi") && (
-                <>
-                  <div>Period: <span className="text-foreground">{params.rsiPeriod}</span></div>
-                  <div>OB: <span className="text-rose-400">{params.overbought}</span></div>
-                  <div>OS: <span className="text-emerald-400">{params.oversold}</span></div>
-                </>
-              )}
               <div>Expiry: <span className="text-foreground">{params.duration}{params.duration_unit}</span></div>
             </div>
           </div>
@@ -269,7 +247,6 @@ export default function BotCenter() {
       {showSettings && (
         <StrategySettingsModal
           params={params}
-          isRSI={strategyId.toLowerCase().includes("rsi")}
           onClose={() => setShowSettings(false)}
           onSave={async (next) => {
             setParams(next);
@@ -282,9 +259,8 @@ export default function BotCenter() {
   );
 }
 
-function StrategySettingsModal({ params, onSave, onClose, isRSI }: {
-  params: { stake: number; rsiPeriod?: number; overbought?: number; oversold?: number; duration: number; duration_unit: "m"|"h"|"d"|"t" };
-  isRSI: boolean;
+function StrategySettingsModal({ params, onSave, onClose }: {
+  params: { stake: number; duration: number; duration_unit: "m"|"h"|"d"|"t" };
   onSave: (p: any) => void;
   onClose: () => void;
 }) {
@@ -302,32 +278,10 @@ function StrategySettingsModal({ params, onSave, onClose, isRSI }: {
               value={form.stake} onChange={(e) => setForm({ ...form, stake: Number(e.target.value) })}/>
           </div>
 
-          <div className="grid gap-3 md:grid-cols-3">
-            {isRSI && (
-              <>
-                <div>
-                  <label className="block text-sm mb-1">RSI Period</label>
-                  <input type="number" className="w-full rounded-lg border border-border bg-background px-3 py-2"
-                    value={form.rsiPeriod ?? 8} onChange={(e) => setForm({ ...form, rsiPeriod: Number(e.target.value) })}/>
-                </div>
-                <div>
-                  <label className="block text-sm mb-1">Overbought</label>
-                  <input type="number" className="w-full rounded-lg border border-border bg-background px-3 py-2"
-                    value={form.overbought ?? 70} onChange={(e) => setForm({ ...form, overbought: Number(e.target.value) })}/>
-                </div>
-                <div>
-                  <label className="block text-sm mb-1">Oversold</label>
-                  <input type="number" className="w-full rounded-lg border border-border bg-background px-3 py-2"
-                    value={form.oversold ?? 30} onChange={(e) => setForm({ ...form, oversold: Number(e.target.value) })}/>
-                </div>
-              </>
-            )}
-          </div>
-
           <div className="grid gap-3 md:grid-cols-2">
             <div>
               <label className="block text-sm mb-1">{form.duration_unit === "t" ? "Tick Count" : "Expiry Duration"}</label>
-              <input type="number" min={form.duration_unit === "t" ? 1 : 1} className="w-full rounded-lg border border-border bg-background px-3 py-2"
+              <input type="number" min={1} className="w-full rounded-lg border border-border bg-background px-3 py-2"
                 value={form.duration} onChange={(e) => setForm({ ...form, duration: Number(e.target.value) })}/>
             </div>
             <div>
