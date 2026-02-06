@@ -12,112 +12,99 @@ export class DerivClient {
   constructor(private token?: string) {}
 
   async connect(): Promise<void> {
-    if (this.ws && this.isOpen) return;
-    const url = `${env.DERIV_WS_URL}?app_id=${env.DERIV_APP_ID}`;
+    if (this.isOpen && this.ws) return;
+    const url = "wss://ws.deriv.com/websockets/v3?app_id=1089"; // replace with your app_id if needed
     this.ws = new WebSocket(url);
-    this.isOpen = false;
-
-    this.ws.on("open", () => {
-      this.isOpen = true;
-    });
-
-    this.ws.on("message", (raw) => {
-      try {
-        const msg = JSON.parse(String(raw));
-        const id = msg.req_id;
+    await new Promise<void>((resolve, reject) => {
+      const onOpen = () => {
+        this.isOpen = true;
+        this.off();
+        resolve();
+      };
+      const onErr = (e: any) => {
+        this.off();
+        reject(new Error(String(e?.message ?? e)));
+      };
+      const onMsg = (ev: any) => {
+        const data = JSON.parse(ev.data);
+        const id = data.req_id;
         if (id && this.pending.has(id)) {
           const p = this.pending.get(id)!;
           clearTimeout(p.timer);
           this.pending.delete(id);
-          if (msg.error) p.reject(new Error(msg.error.message ?? "Deriv error"));
-          else p.resolve(msg);
+          if (data.error) p.reject(new Error(data.error.message || "Deriv error"));
+          else p.resolve(data);
         }
-      } catch {
-        // ignore
-      }
-    });
-
-    this.ws.on("close", () => {
-      this.isOpen = false;
-      for (const [, p] of this.pending) {
-        clearTimeout(p.timer);
-        p.reject(new Error("Deriv socket closed"));
-      }
-      this.pending.clear();
-    });
-
-    await new Promise<void>((resolve, reject) => {
-      const t = setTimeout(() => reject(new Error("Deriv connect timeout")), 8000);
-      this.ws!.once("open", () => {
-        clearTimeout(t);
-        resolve();
-      });
-      this.ws!.once("error", reject);
+      };
+      this.ws!.addEventListener("open", onOpen);
+      this.ws!.addEventListener("error", onErr);
+      this.ws!.addEventListener("message", onMsg);
+      (this.ws as any)._cleanup = () => {
+        this.ws?.removeEventListener("open", onOpen as any);
+        this.ws?.removeEventListener("error", onErr as any);
+        this.ws?.removeEventListener("message", onMsg as any);
+      };
     });
 
     if (this.token) {
-      await this.request({ authorize: this.token });
+      await this.send({ authorize: this.token });
     }
   }
 
-  async request(payload: Record<string, any>, timeoutMs = 10_000) {
-    await this.connect();
-    const id = this.reqId++;
-    const ws = this.ws!;
-    return await new Promise<any>((resolve, reject) => {
+  private off() {
+    (this.ws as any)?._cleanup?.();
+  }
+
+  private send<T = any>(payload: Record<string, any>, timeoutMs = 15000): Promise<T> {
+    if (!this.ws || !this.isOpen) throw new Error("WebSocket not connected");
+    const req_id = this.reqId++;
+    const body = JSON.stringify({ ...payload, req_id });
+    this.ws.send(body);
+
+    return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new Error("Deriv request timeout"));
+        this.pending.delete(req_id);
+        reject(new Error("Request timeout"));
       }, timeoutMs);
-      this.pending.set(id, { resolve, reject, timer });
-      ws.send(JSON.stringify({ ...payload, req_id: id }));
+      this.pending.set(req_id, { resolve, reject, timer });
     });
   }
 
-  async validateToken(token: string) {
-    const c = new DerivClient(token);
-    await c.connect();
-    const res = await c.request({ authorize: token });
-    const auth = res.authorize;
-    return { account_id: auth?.loginid as string | undefined, currency: auth?.currency as string | undefined };
-  }
+  // Create a proposal for Rise/Fall with duration + stake, then buy it
+  async buyRiseFall(params: {
+    symbol: string;
+    side: "CALL" | "PUT";
+    stake: number;
+    duration: number;
+    duration_unit: "t" | "m" | "h" | "d";
+    currency?: string;
+  }) {
+    const currency = params.currency ?? "USD";
+    await this.connect();
 
-  async activeSymbols() {
-    const res = await this.request({ active_symbols: "brief", product_type: "basic" });
-    return (res.active_symbols ?? []) as any[];
-  }
-
-  async candles(symbol: string, granularitySec: number, count = 200) {
-    const res = await this.request({
-      ticks_history: symbol,
-      adjust_start_time: 1,
-      count,
-      end: "latest",
-      style: "candles",
-      granularity: granularitySec,
-    });
-    return (res.candles ?? []) as any[];
-  }
-
-  async buyRiseFall(symbol: string, stake: number, duration: number, duration_unit: "t" | "m" | "h" | "d", contract_type: "CALL" | "PUT") {
-    // Simplified live flow for binary (Deriv supports many types; extend as needed).
-    const proposal = await this.request({
+    const proposal = await this.send<{
+      echo_req: any;
+      proposal: { id: string; payout: number; spot: number };
+    }>({
       proposal: 1,
-      amount: stake,
+      amount: Number(params.stake),
       basis: "stake",
-      contract_type,
-      currency: "USD",
-      duration,
-      duration_unit,
-      symbol,
+      contract_type: params.side,
+      currency,
+      duration: Number(params.duration),
+      duration_unit: params.duration_unit,
+      symbol: params.symbol,
+      // barrier is not required for RISE/FALL simple CALL/PUT
     });
-    const proposalId = proposal.proposal?.id;
-    if (!proposalId) throw new Error("No proposal id");
-    const buy = await this.request({ buy: proposalId, price: stake });
-    return buy;
-  }
 
-  close() {
-    try { this.ws?.close(); } catch { /* ignore */ }
+    const proposal_id = (proposal as any)?.proposal?.id;
+    if (!proposal_id) throw new Error("No proposal_id returned from Deriv");
+
+    const buy = await this.send<{ buy: any; buy_price: number }>({
+      buy: proposal_id,
+      price: Number(params.stake),
+    });
+
+    return buy;
   }
 }
