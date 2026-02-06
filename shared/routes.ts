@@ -1,17 +1,10 @@
 import { z } from "zod";
 
-export const zTimeframe = z.enum(["1s","1m","3m","5m","15m","30m","1h","2h","4h","1d"]);
-export type Timeframe = z.infer<typeof zTimeframe>;
-
-export const zUuid = z.string().uuid();
-export const zIsoDate = z.string();
-
-// ✅ IMPORTANT: define enums as const tuples (Zod needs tuples, not generic arrays)
-const ACCOUNT_TYPES = ["deriv", "mt5"] as const satisfies readonly AccountType[];
-const BOT_STATES = ["stopped", "running"] as const satisfies readonly BotState[];
-const TRADING_MODES = ["backtest", "paper", "live"] as const satisfies readonly TradingMode[];
-const TIMEFRAMES = ["1s", "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "1d"] as const satisfies readonly Timeframe[];
-
+// Const tuples for enums
+const ACCOUNT_TYPES = ["deriv", "mt5"] as const;
+const BOT_STATES = ["stopped", "running"] as const;
+const TRADING_MODES = ["backtest", "paper", "live"] as const;
+const TIMEFRAMES = ["1s", "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "1d"] as const;
 const STRATEGY_IDS = [
   "candle_pattern",
   "one_hour_trend",
@@ -21,8 +14,17 @@ const STRATEGY_IDS = [
   "supply_demand_sweep",
   "fvg_retracement",
   "range_mean_reversion",
-] as const satisfies readonly StrategyId[];
+] as const;
 
+// Shared primitives
+export const zUuid = z.string().uuid();
+export const zIsoDate = z.string();
+
+// Timeframe export (ensure index.ts does not re-export another Timeframe to avoid TS2308)
+export type Timeframe = (typeof TIMEFRAMES)[number];
+export const zTimeframe = z.enum(TIMEFRAMES);
+
+// Subscription/Profile
 export const zSubscription = z.object({
   plan: z.enum(["free", "pro"]),
   status: z.enum(["active", "past_due", "canceled", "inactive"]),
@@ -36,6 +38,7 @@ export const zProfile = z.object({
   created_at: zIsoDate,
 });
 
+// Accounts / connections
 export const zAccount = z.object({
   id: zUuid,
   user_id: z.string(),
@@ -64,6 +67,7 @@ export const zMt5LoginRes = z.object({
   message: z.string().optional(),
 });
 
+// Instruments
 export const zInstrument = z.object({
   symbol: z.string(),
   display_name: z.string(),
@@ -74,6 +78,7 @@ export const zInstrument = z.object({
   exchange_is_open: z.boolean().optional(),
 });
 
+// Strategies
 export const zStrategyMeta = z.object({
   id: z.enum(STRATEGY_IDS),
   name: z.string(),
@@ -81,6 +86,7 @@ export const zStrategyMeta = z.object({
   default_params: z.record(z.any()),
 });
 
+// Risk rules
 export const zRiskRules = z.object({
   risk_type: z.enum(["fixed_stake", "percent_balance"]),
   fixed_stake: z.number().min(0).default(1),
@@ -95,6 +101,7 @@ export const zRiskRules = z.object({
   adaptive_lookback: z.number().min(5).max(200).default(25),
 });
 
+// Candle
 export const zCandle = z.object({
   t: z.number(),
   o: z.number(),
@@ -104,6 +111,7 @@ export const zCandle = z.object({
   v: z.number().optional(),
 });
 
+// Bot config/status
 export const zBotConfig = z.object({
   id: zUuid.optional(),
   account_id: zUuid,
@@ -128,6 +136,7 @@ export const zBotStatus = z.object({
   active_configs: z.number(),
 });
 
+// Trades / Journals
 export const zTrade = z.object({
   id: zUuid,
   user_id: z.string(),
@@ -158,6 +167,7 @@ export const zJournal = z.object({
   created_at: zIsoDate,
 });
 
+// Backtests
 export const zBacktestReq = z.object({
   strategy_id: zStrategyMeta.shape.id,
   symbol: z.string(),
@@ -179,6 +189,7 @@ export const zBacktestRes = z.object({
   sample_trades: z.array(zTrade).default([]),
 });
 
+// API contract
 export const api = {
   auth: {
     me: { path: "/api/me", responses: { 200: zProfile } },
