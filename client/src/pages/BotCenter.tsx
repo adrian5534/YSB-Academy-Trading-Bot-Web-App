@@ -21,10 +21,8 @@ export default function BotCenter() {
   const [accountId, setAccountId] = useState<string>("");
   const [symbol, setSymbol] = useState("R_100");
   const [timeframe, setTimeframe] = useState("1m");
-  const [strategyId, setStrategyId] = useState("trend_confirmation");
+  const [strategyId, setStrategyId] = useState("RSI");
   const [mode, setMode] = useState<"backtest" | "paper" | "live">("paper");
-
-  // strategy params: stake + RSI + duration
   const [params, setParams] = useState({
     stake: 250,
     rsiPeriod: 8,
@@ -35,36 +33,48 @@ export default function BotCenter() {
   });
   const [showSettings, setShowSettings] = useState(false);
 
-  // Load existing settings for this account/symbol/timeframe/strategy
+  // default account
+  useEffect(() => {
+    if (!accountId && availableAccounts.length) setAccountId(availableAccounts[0].id);
+  }, [availableAccounts, accountId]);
+
+  // load saved settings for this combo
   useEffect(() => {
     (async () => {
       if (!accountId) return;
       try {
-        const res = await apiFetch(`/api/strategies/settings/${accountId}`);
-        const all = (await res.json()) as any[];
-        const found = all.find(
+        const r = await fetch(`/api/strategies/settings/${accountId}`);
+        const list = (await r.json()) as any[];
+        const found = list.find(
           (s) =>
             s.symbol === symbol &&
             s.timeframe === timeframe &&
             s.strategy_id === strategyId
         );
-        if (found?.params) {
-          setParams((p) => ({ ...p, ...found.params }));
-        }
-      } catch {
-        /* noop */
-      }
+        if (found?.params) setParams((p) => ({ ...p, ...found.params }));
+      } catch {}
     })();
   }, [accountId, symbol, timeframe, strategyId]);
 
-  const isPro = sub?.plan === "pro";
+  const persistSettings = async (next = params) => {
+    if (!accountId) return;
+    try {
+      await fetch(`/api/strategies/settings`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          account_id: accountId,
+          symbol,
+          timeframe,
+          strategy_id: strategyId,
+          params: next,
+          enabled: true,
+        }),
+      });
+    } catch {}
+  };
 
-  useEffect(() => {
-    if (!accountId && availableAccounts.length) {
-      const firstDeriv = availableAccounts.find((a: any) => a.type === "deriv");
-      setAccountId(firstDeriv?.id ?? availableAccounts[0].id);
-    }
-  }, [accountId, availableAccounts]);
+  const isPro = sub?.plan === "pro";
 
   const start = async () => {
     try {
@@ -72,22 +82,9 @@ export default function BotCenter() {
         toast({ title: "Upgrade required", description: "Paper/Live trading requires Pro plan.", variant: "destructive" });
         return;
       }
-      // persist latest settings for this combo
-      try {
-        await apiFetch("/api/strategies/settings", {
-          method: "POST",
-          body: JSON.stringify({
-            account_id: accountId,
-            symbol,
-            timeframe,
-            strategy_id: strategyId,
-            params,
-            enabled: true,
-          }),
-        });
-      } catch {/* ignore */}
-
-      const payload = api.bots.start.input.parse({
+      // persist then start
+      await persistSettings();
+      await startBot.mutateAsync({
         name: "YSB Bot",
         configs: [
           {
@@ -96,12 +93,11 @@ export default function BotCenter() {
             timeframe,
             strategy_id: strategyId,
             mode,
-            params, // include stake + RSI + duration
+            params, // includes stake + duration
             enabled: true,
           },
         ],
       });
-      await startBot.mutateAsync(payload);
       toast({ title: "Bot started", description: "Streaming logs via WebSocket." });
     } catch (e: any) {
       toast({ title: "Start failed", description: String(e.message ?? e), variant: "destructive" });

@@ -58,9 +58,7 @@ export class DerivClient {
   private send<T = any>(payload: Record<string, any>, timeoutMs = 15000): Promise<T> {
     if (!this.ws || !this.isOpen) throw new Error("WebSocket not connected");
     const req_id = this.reqId++;
-    const body = JSON.stringify({ ...payload, req_id });
-    this.ws.send(body);
-
+    this.ws.send(JSON.stringify({ ...payload, req_id }));
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(req_id);
@@ -70,41 +68,27 @@ export class DerivClient {
     });
   }
 
-  // Create a proposal for Rise/Fall with duration + stake, then buy it
-  async buyRiseFall(params: {
+  async buyRiseFall(opts: {
     symbol: string;
     side: "CALL" | "PUT";
     stake: number;
     duration: number;
-    duration_unit: "t" | "m" | "h" | "d";
+    duration_unit: "m" | "h" | "d" | "t";
     currency?: string;
   }) {
-    const currency = params.currency ?? "USD";
-    await this.connect();
-
-    const proposal = await this.send<{
-      echo_req: any;
-      proposal: { id: string; payout: number; spot: number };
-    }>({
+    const currency = opts.currency ?? "USD";
+    const proposal = await this.send<any>({
       proposal: 1,
-      amount: Number(params.stake),
+      amount: Number(opts.stake),
       basis: "stake",
-      contract_type: params.side,
+      contract_type: opts.side,
       currency,
-      duration: Number(params.duration),
-      duration_unit: params.duration_unit,
-      symbol: params.symbol,
-      // barrier is not required for RISE/FALL simple CALL/PUT
+      duration: Number(opts.duration),
+      duration_unit: opts.duration_unit,
+      symbol: opts.symbol,
     });
-
-    const proposal_id = (proposal as any)?.proposal?.id;
-    if (!proposal_id) throw new Error("No proposal_id returned from Deriv");
-
-    const buy = await this.send<{ buy: any; buy_price: number }>({
-      buy: proposal_id,
-      price: Number(params.stake),
-    });
-
-    return buy;
+    const proposal_id = proposal?.proposal?.id;
+    if (!proposal_id) throw new Error("No proposal_id from Deriv");
+    return this.send<any>({ buy: proposal_id, price: Number(opts.stake) });
   }
 }

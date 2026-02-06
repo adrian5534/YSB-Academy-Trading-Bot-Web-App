@@ -314,11 +314,11 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
     }),
   );
 
-  // Save strategy settings for an account/symbol/timeframe/strategy_id
+  // Save strategy settings for a user/account/symbol/timeframe/strategy
   app.post(
     "/api/strategies/settings",
     asyncRoute(async (req, res) => {
-      const userId = req.user?.id ?? req.headers["x-user-id"];
+      const userId = req.user?.id ?? req.headers["x-user-id"] ?? res.locals?.user?.id;
       if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
       const { account_id, symbol, timeframe, strategy_id, params, enabled } = req.body ?? {};
@@ -346,19 +346,18 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
     })
   );
 
-  // List strategy settings for an account
+  // List saved settings for an account
   app.get(
     "/api/strategies/settings/:account_id",
     asyncRoute(async (req, res) => {
-      const userId = req.user?.id ?? req.headers["x-user-id"];
+      const userId = req.user?.id ?? req.headers["x-user-id"] ?? res.locals?.user?.id;
       if (!userId) return res.status(401).json({ error: "Unauthorized" });
-      const account_id = req.params.account_id;
 
       const { data, error } = await supabaseAdmin
         .from("strategy_settings")
         .select("*")
         .eq("user_id", String(userId))
-        .eq("account_id", String(account_id))
+        .eq("account_id", String(req.params.account_id))
         .order("updated_at", { ascending: false });
 
       if (error) return res.status(500).json({ error: "DB error", details: error });
