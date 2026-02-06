@@ -54,7 +54,7 @@ export function TradeHistory() {
                 const exit =
                   t.exit_price ?? t.exit ?? t.close_price ?? t.close ?? null;
                 const profitNum = Number(t.profit ?? 0);
-                const won = profitNum > 0;
+                const won = profitNum > 0; 
 
                 return (
                   <tr key={t.id} className="border-b border-border/40">
