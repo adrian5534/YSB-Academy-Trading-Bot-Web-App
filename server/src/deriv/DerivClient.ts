@@ -18,32 +18,43 @@ export class DerivClient {
     await new Promise<void>((resolve, reject) => {
       const onOpen = () => {
         this.isOpen = true;
-        this.off();
+        cleanup();
         resolve();
       };
       const onErr = (e: any) => {
-        this.off();
+        cleanup();
         reject(new Error(String(e?.message ?? e)));
       };
-      const onMsg = (ev: any) => {
-        const data = JSON.parse(ev.data);
-        const id = data.req_id;
-        if (id && this.pending.has(id)) {
-          const p = this.pending.get(id)!;
-          clearTimeout(p.timer);
-          this.pending.delete(id);
-          if (data.error) p.reject(new Error(data.error.message || "Deriv error"));
-          else p.resolve(data);
+      const onMsg = (data: WebSocket.Data) => {
+        try {
+          const text = typeof data === "string" ? data : data.toString();
+          const msg = JSON.parse(text);
+          const id = msg.req_id;
+          if (id && this.pending.has(id)) {
+            const p = this.pending.get(id)!;
+            clearTimeout(p.timer);
+            this.pending.delete(id);
+            if (msg.error) p.reject(new Error(msg.error.message || "Deriv error"));
+            else p.resolve(msg);
+          } else {
+            // non-request message (ticks/updates). keep quiet or debug if needed
+            // console.debug("[DerivClient] message", msg);
+          }
+        } catch (err) {
+          console.error("[DerivClient] message parse error", String(err));
         }
       };
-      this.ws!.addEventListener("open", onOpen);
-      this.ws!.addEventListener("error", onErr);
-      this.ws!.addEventListener("message", onMsg);
-      (this.ws as any)._cleanup = () => {
-        this.ws?.removeEventListener("open", onOpen as any);
-        this.ws?.removeEventListener("error", onErr as any);
-        this.ws?.removeEventListener("message", onMsg as any);
+
+      const cleanup = () => {
+        this.ws?.off("open", onOpen as any);
+        this.ws?.off("error", onErr as any);
+        this.ws?.off("message", onMsg as any);
       };
+
+      this.ws.on("open", onOpen);
+      this.ws.on("error", onErr);
+      this.ws.on("message", onMsg);
+      (this.ws as any)._cleanup = cleanup;
     });
 
     if (this.token) {
