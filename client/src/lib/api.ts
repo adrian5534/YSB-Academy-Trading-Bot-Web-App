@@ -1,30 +1,18 @@
-import { supabase } from "./supabase";
+// Ensure calls hit your API host and include Supabase token (fixes 404/401)
+const API_BASE = import.meta.env.VITE_API_URL?.replace(/\/$/, "") ?? "";
+export async function apiFetch(path: string, init?: RequestInit) {
+  const url = /^https?:\/\//i.test(path) ? path : `${API_BASE}${path}`;
+  const headers = new Headers(init?.headers ?? {});
+  if (!headers.has("Content-Type")) headers.set("Content-Type", "application/json");
 
-function withBase(input: RequestInfo | URL) {
-  const base = (import.meta.env.VITE_BACKEND_URL as string | undefined)?.replace(/\/$/, "") ?? "";
-  if (!base) return input;
+  try {
+    const { supabase } = await import("@/lib/supabase");
+    const { data } = await supabase.auth.getSession();
+    const token = data.session?.access_token;
+    if (token && !headers.has("Authorization")) headers.set("Authorization", `Bearer ${token}`);
+  } catch {}
 
-  if (typeof input === "string" && input.startsWith("/")) return base + input;
-  if (input instanceof URL && input.pathname.startsWith("/")) return new URL(base + input.pathname + input.search);
-  return input;
-}
-
-export async function apiFetch(input: RequestInfo | URL, init?: RequestInit) {
-  const session = (await supabase.auth.getSession()).data.session;
-  const token = session?.access_token;
-
-  const headers = new Headers(init?.headers || {});
-  if (token) headers.set("Authorization", `Bearer ${token}`);
-  if (!headers.has("Content-Type") && init?.body && !(init?.body instanceof FormData)) {
-    headers.set("Content-Type", "application/json");
-  }
-
-  const res = await fetch(withBase(input), { ...init, headers });
-  if (!res.ok) {
-    const msg = await res.text().catch(() => res.statusText);
-    throw new Error(`${res.status} ${msg}`);
-  }
-  return res;
+  return fetch(url, { ...init, headers, credentials: "include" });
 }
 
 export type WsEvent =
