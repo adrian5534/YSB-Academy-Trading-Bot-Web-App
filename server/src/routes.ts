@@ -121,7 +121,7 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
         const info = await c.validateToken(body.token);
         res.json({ ok: true, ...info });
       } catch (e: any) {
-        res.json({ ok: false, message: String(e?.message ?? e) });
+        res.json({ ok: false, message: String(e?.Message ?? e) });
       }
     }),
   );
@@ -275,10 +275,10 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
       res.json(
         api.strategies.list.responses[200].parse(
           strategies.map((s: StrategyLike): StrategyListItem => ({
-        id: s.id,
-        name: s.name,
-        description: s.description,
-        default_params: s.defaultParams,
+            id: s.id,
+            name: s.name,
+            description: s.description,
+            default_params: s.defaultParams,
           })),
         ),
       );
@@ -328,59 +328,7 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
     }),
   );
 
-  // Save strategy settings
-  app.post("/api/strategies/settings", async (req, res) => {
-    try {
-      const userId = (req as any).user?.id || req.headers["x-user-id"];
-      if (!userId) return res.status(401).json({ error: "Unauthorized" });
-
-      const { account_id, symbol, timeframe, strategy_id, params, enabled } = req.body ?? {};
-      if (!account_id || !symbol || !timeframe || !strategy_id) {
-        return res.status(400).json({ error: "Missing fields" });
-      }
-
-      const { error } = await supabaseAdmin
-        .from("strategy_settings")
-        .upsert(
-          {
-            user_id: String(userId),
-            account_id: String(account_id),
-            symbol: String(symbol),
-            timeframe: String(timeframe),
-            strategy_id: String(strategy_id),
-            params: params ?? {},
-            enabled: !!enabled,
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: "user_id,account_id,symbol,timeframe,strategy_id" }
-        );
-
-      if (error) return res.status(500).json({ error: "DB error", details: error });
-      res.json({ ok: true });
-    } catch (e: any) {
-      res.status(500).json({ error: "Internal Server Error", message: String(e?.message ?? e) });
-    }
-  });
-
-  // Read settings for an account
-  app.get("/api/strategies/settings/:account_id", async (req, res) => {
-    try {
-      const userId = (req as any).user?.id || req.headers["x-user-id"];
-      if (!userId) return res.status(401).json({ error: "Unauthorized" });
-
-      const { data, error } = await supabaseAdmin
-        .from("strategy_settings")
-        .select("*")
-        .eq("user_id", String(userId))
-        .eq("account_id", String(req.params.account_id))
-        .order("updated_at", { ascending: false });
-
-      if (error) return res.status(500).json({ error: "DB error", details: error });
-      res.json(data ?? []);
-    } catch (e: any) {
-      res.status(500).json({ error: "Internal Server Error", message: String(e?.message ?? e) });
-    }
-  });
+  // (Removed duplicate unprotected /api/strategies/settings handlers — use the router endpoints above which run requireUser)
 
   // ===== Bots =====
   router.get(

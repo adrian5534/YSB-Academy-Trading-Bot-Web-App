@@ -67,34 +67,35 @@ export default function BotCenter() {
     (async () => {
       if (!accountId) return;
       try {
-        const r = await apiFetch(`/api/strategies/settings/${accountId}`);
-        const list = (await r.json()) as any[];
-        const found = list.find((s) => s.symbol === symbol && s.timeframe === timeframe && s.strategy_id === strategyId);
-        if (found?.params) setParams((p) => ({ ...p, ...found.params }));
-      } catch {
-        /* ignore */
-      }
-    })();
-  }, [accountId, symbol, timeframe, strategyId]);
-
-  const persistSettings = async (next = params) => {
-    if (!accountId) return;
-    try {
-      await apiFetch(`/api/strategies/settings`, {
-        method: "POST",
-        body: JSON.stringify({
-          account_id: accountId,
-          symbol,
-          timeframe,
-          strategy_id: strategyId,
-          params: next,
-          enabled: true,
-        }),
-      });
-    } catch {
-      /* ignore */
-    }
-  };
+        const path = api.strategies.settingsForAccount.path.replace(":accountId", accountId);
+        const r = await apiFetch(path);
+         const list = (await r.json()) as any[];
+         const found = list.find((s) => s.symbol === symbol && s.timeframe === timeframe && s.strategy_id === strategyId);
+         if (found?.params) setParams((p) => ({ ...p, ...found.params }));
+       } catch {
+         /* ignore */
+       }
+     })();
+   }, [accountId, symbol, timeframe, strategyId]);
+ 
+   const persistSettings = async (next = params) => {
+     if (!accountId) return;
+     try {
+      await apiFetch(api.strategies.setSettings.path, {
+         method: "POST",
+         body: JSON.stringify({
+           account_id: accountId,
+           symbol,
+           timeframe,
+           strategy_id: strategyId,
+           params: next,
+           enabled: true,
+         }),
+       });
+     } catch {
+       /* ignore */
+     }
+   };
 
   const isPro = sub?.plan === "pro";
 
