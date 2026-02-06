@@ -8,8 +8,11 @@ export class DerivClient {
   private pending = new Map<number, Pending>();
   private reqId = 1;
   private isOpen = false;
+  private onMessageCallback?: (msg: any) => void;
 
-  constructor(private token?: string) {}
+  constructor(private token?: string, onMessage?: (msg: any) => void) {
+    this.onMessageCallback = onMessage;
+  }
 
   async connect(): Promise<void> {
     if (this.isOpen && this.ws) return;
@@ -37,11 +40,20 @@ export class DerivClient {
             if (msg.error) p.reject(new Error(msg.error.message || "Deriv error"));
             else p.resolve(msg);
           } else {
-            // non-request message (ticks/updates). keep quiet or debug if needed
-            // console.debug("[DerivClient] message", msg);
+            // Non-request messages (ticks/updates) — forward to caller and log for debugging.
+            try {
+              // small, non-noisy log to help trace the "tick error" source
+              console.debug("[DerivClient] non-req message", msg?.tick ? { symbol: msg.tick?.symbol, epoch: msg.tick?.epoch } : msg);
+            } catch {}
+            // forward to optional callback so callers (BotManager etc.) can handle ticks safely
+            try {
+              this.onMessageCallback?.(msg);
+            } catch (cbErr) {
+              console.error("[DerivClient] onMessage callback error", String(cbErr));
+            }
           }
         } catch (err) {
-          console.error("[DerivClient] message parse error", String(err));
+          console.error("[DerivClient] message parse error", String(err), "raw:", typeof data === "string" ? data : data.toString());
         }
       };
 
@@ -60,6 +72,11 @@ export class DerivClient {
     if (this.token) {
       await this.send({ authorize: this.token });
     }
+  }
+
+  // helper so callers can attach a runtime handler after construction
+  setOnMessage(fn?: (msg: any) => void) {
+    this.onMessageCallback = fn;
   }
 
   private off() {
