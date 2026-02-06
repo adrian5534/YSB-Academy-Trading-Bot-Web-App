@@ -9,6 +9,7 @@ export class DerivClient {
   private reqId = 1;
   private isOpen = false;
   private onMessageCallback?: (msg: any) => void;
+  private boundOnMessage?: (data: WebSocket.Data) => void;
 
   constructor(private token?: string, onMessage?: (msg: any) => void) {
     this.onMessageCallback = onMessage;
@@ -16,19 +17,15 @@ export class DerivClient {
 
   async connect(): Promise<void> {
     if (this.isOpen && this.ws) return;
-    const url = "wss://ws.deriv.com/websockets/v3?app_id=1089"; // replace with your app_id if needed
+
+    const appId = String((env as any)?.DERIV_APP_ID ?? 1089);
+    const url = `wss://ws.deriv.com/websockets/v3?app_id=${appId}`;
+
     this.ws = new WebSocket(url);
-    await new Promise<void>((resolve, reject) => {
-      const onOpen = () => {
-        this.isOpen = true;
-        cleanup();
-        resolve();
-      };
-      const onErr = (e: any) => {
-        cleanup();
-        reject(new Error(String(e?.message ?? e)));
-      };
-      const onMsg = (data: WebSocket.Data) => {
+
+    // attach a persistent message handler once
+    if (!this.boundOnMessage) {
+      this.boundOnMessage = (data: WebSocket.Data) => {
         try {
           const text = typeof data === "string" ? data : data.toString();
           const msg = JSON.parse(text);
@@ -40,47 +37,59 @@ export class DerivClient {
             if (msg.error) p.reject(new Error(msg.error.message || "Deriv error"));
             else p.resolve(msg);
           } else {
-            // Non-request messages (ticks/updates) — forward to caller and log for debugging.
-            try {
-              // small, non-noisy log to help trace the "tick error" source
-              console.debug("[DerivClient] non-req message", msg?.tick ? { symbol: msg.tick?.symbol, epoch: msg.tick?.epoch } : msg);
-            } catch {}
-            // forward to optional callback so callers (BotManager etc.) can handle ticks safely
+            // Non-request messages (ticks/updates)
             try {
               this.onMessageCallback?.(msg);
             } catch (cbErr) {
-              console.error("[DerivClient] onMessage callback error", String(cbErr));
+              const e = cbErr as any;
+              console.error("[DerivClient] onMessage callback error:", e && (e.stack ?? e.message ?? e));
+              try { console.error("[DerivClient] callback message (raw):", JSON.stringify(msg)); } catch {}
             }
           }
         } catch (err) {
           console.error("[DerivClient] message parse error", String(err), "raw:", typeof data === "string" ? data : data.toString());
         }
       };
+    }
 
-      const cleanup = () => {
-        this.ws?.off("open", onOpen as any);
-        this.ws?.off("error", onErr as any);
-        this.ws?.off("message", onMsg as any);
+    this.ws.on("message", this.boundOnMessage);
+
+    await new Promise<void>((resolve, reject) => {
+      const onOpen = async () => {
+        this.isOpen = true;
+        this.ws?.off("error", onErrorOnce);
+        resolve();
       };
-
-      this.ws.on("open", onOpen);
-      this.ws.on("error", onErr);
-      this.ws.on("message", onMsg);
-      (this.ws as any)._cleanup = cleanup;
+      const onErrorOnce = (e: any) => {
+        this.ws?.off("open", onOpen);
+        reject(new Error(String(e?.message ?? e)));
+      };
+      this.ws!.once("open", onOpen);
+      this.ws!.once("error", onErrorOnce);
     });
 
+    // authorize if token provided
     if (this.token) {
       await this.send({ authorize: this.token });
     }
   }
 
-  // helper so callers can attach a runtime handler after construction
-  setOnMessage(fn?: (msg: any) => void) {
-    this.onMessageCallback = fn;
+  // optional disconnect
+  async disconnect(): Promise<void> {
+    try {
+      if (this.ws) {
+        if (this.boundOnMessage) this.ws.off("message", this.boundOnMessage);
+        this.ws.close();
+      }
+    } finally {
+      this.ws = null;
+      this.isOpen = false;
+    }
   }
 
-  private off() {
-    (this.ws as any)?._cleanup?.();
+  // allow caller to register/replace non-request message handler
+  setOnMessage(fn?: (msg: any) => void) {
+    this.onMessageCallback = fn;
   }
 
   private send<T = any>(payload: Record<string, any>, timeoutMs = 15000): Promise<T> {
@@ -96,27 +105,68 @@ export class DerivClient {
     });
   }
 
-  async buyRiseFall(opts: {
-    symbol: string;
-    side: "CALL" | "PUT";
-    stake: number;
-    duration: number;
-    duration_unit: "m" | "h" | "d" | "t";
-    currency?: string;
-  }) {
-    const currency = opts.currency ?? "USD";
+  // Retrieve OHLC candles
+  async candles(symbol: string, granularitySec: number, count: number) {
+    const res = await this.send<any>({
+      ticks_history: symbol,
+      end: "latest",
+      count: Number(count),
+      start: 1,
+      style: "candles",
+      granularity: Number(granularitySec),
+      adjust_start_time: 1,
+    });
+
+    if (res?.error) throw new Error(res.error.message || "Deriv candles error");
+    const candles = res?.candles;
+    if (!Array.isArray(candles)) throw new Error("No candles in response");
+    return candles;
+  }
+
+  // Buy rise/fall. Supports both object and positional call styles.
+  // Positional: buyRiseFall(symbol, stake, duration, duration_unit, contractType)
+  async buyRiseFall(
+    optsOrSymbol:
+      | {
+          symbol: string;
+          side: "CALL" | "PUT";
+          stake: number;
+          duration: number;
+          duration_unit: "m" | "h" | "d" | "t";
+          currency?: string;
+        }
+      | string,
+    stake?: number,
+    duration?: number,
+    duration_unit?: "m" | "h" | "d" | "t",
+    contractType?: "CALL" | "PUT",
+  ) {
+    const isObjectCall = typeof optsOrSymbol === "object";
+    const symbol = isObjectCall ? (optsOrSymbol as any).symbol : String(optsOrSymbol);
+    const side = isObjectCall ? (optsOrSymbol as any).side : contractType!;
+    const amt = isObjectCall ? Number((optsOrSymbol as any).stake) : Number(stake);
+    const dur = isObjectCall ? Number((optsOrSymbol as any).duration) : Number(duration);
+    const unit = (isObjectCall ? (optsOrSymbol as any).duration_unit : duration_unit)!;
+    const currency = (isObjectCall ? (optsOrSymbol as any).currency : undefined) ?? "USD";
+
+    if (!symbol) throw new Error("buyRiseFall: symbol required");
+    if (!side) throw new Error("buyRiseFall: side required");
+    if (!Number.isFinite(amt) || amt <= 0) throw new Error("buyRiseFall: stake invalid");
+    if (!Number.isFinite(dur) || dur <= 0) throw new Error("buyRiseFall: duration invalid");
+    if (!unit) throw new Error("buyRiseFall: duration_unit required");
+
     const proposal = await this.send<any>({
       proposal: 1,
-      amount: Number(opts.stake),
+      amount: amt,
       basis: "stake",
-      contract_type: opts.side,
+      contract_type: side,
       currency,
-      duration: Number(opts.duration),
-      duration_unit: opts.duration_unit,
-      symbol: opts.symbol,
+      duration: dur,
+      duration_unit: unit,
+      symbol,
     });
     const proposal_id = proposal?.proposal?.id;
     if (!proposal_id) throw new Error("No proposal_id from Deriv");
-    return this.send<any>({ buy: proposal_id, price: Number(opts.stake) });
+    return this.send<any>({ buy: proposal_id, price: amt });
   }
 }
