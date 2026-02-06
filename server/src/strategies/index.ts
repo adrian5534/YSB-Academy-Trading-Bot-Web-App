@@ -7,7 +7,7 @@ import { supplyDemandSweep } from "./supplyDemandSweep";
 import { fvgRetracement } from "./fvgRetracement";
 import { rangeMeanReversion } from "./rangeMeanReversion";
 import type { StrategyModule, StrategyCatalogEntry } from "./types";
-import { RSI_STRATEGY } from "./rsi";
+import { rsi, RSI_STRATEGY } from "./rsi";
 
 export const strategies: StrategyModule[] = [
   candlePattern,
@@ -18,6 +18,7 @@ export const strategies: StrategyModule[] = [
   supplyDemandSweep,
   fvgRetracement,
   rangeMeanReversion,
+  rsi,
 ];
 
 // Expand this list as you add new strategy files. The non-RSI entries below
