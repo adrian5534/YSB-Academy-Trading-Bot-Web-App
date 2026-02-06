@@ -8,7 +8,7 @@ export const zIsoDate = z.string();
 const ACCOUNT_TYPES = ["deriv", "mt5"] as const satisfies readonly AccountType[];
 const BOT_STATES = ["stopped", "running"] as const satisfies readonly BotState[];
 const TRADING_MODES = ["backtest", "paper", "live"] as const satisfies readonly TradingMode[];
-const TIMEFRAMES = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "1d"] as const satisfies readonly Timeframe[];
+const TIMEFRAMES = ["1s", "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "1d"] as const satisfies readonly Timeframe[];
 
 const STRATEGY_IDS = [
   "candle_pattern",

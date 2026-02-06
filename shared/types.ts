@@ -3,6 +3,7 @@ export type AccountType = "deriv" | "mt5";
 export type BotState = "stopped" | "running";
 
 export type Timeframe =
+  | "1s"
   | "1m"
   | "3m"
   | "5m"

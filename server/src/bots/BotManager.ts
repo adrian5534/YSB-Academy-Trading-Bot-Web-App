@@ -29,10 +29,11 @@ type Running = {
 };
 
 function timeframeToSec(tf: string) {
-  const m = /^([0-9]+)(m|h|d)$/.exec(tf);
+  const m = /^([0-9]+)(s|m|h|d)$/.exec(tf);
   if (!m) return 60;
   const n = Number(m[1]);
   const u = m[2];
+  if (u === "s") return n;
   if (u === "m") return n * 60;
   if (u === "h") return n * 3600;
   return n * 86400;
