@@ -5,7 +5,7 @@ import { requireUser, type AuthedRequest } from "./middleware/auth";
 import { requireProForPaperLive } from "./middleware/subscription";
 import { DerivClient } from "./deriv/DerivClient";
 import { encryptJson } from "./crypto/secrets";
-import { strategies } from "./strategies";
+import { strategies, STRATEGY_CATALOG } from "./strategies";
 import { BotManager } from "./bots/BotManager";
 import type { WsHub } from "./ws/hub";
 import { parseCsv, runBacktest } from "./backtests/runBacktest";
@@ -714,6 +714,11 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
       res.json({ users: users.data, subscriptions: subs.data, logs: logs.data });
     }),
   );
+
+  // Expose strategies directly from the strategies folder (source of truth)
+  app.get("/api/strategies/catalog", (_req, res) => {
+    res.json(STRATEGY_CATALOG);
+  });
 
   app.use(router);
   return { botManager };

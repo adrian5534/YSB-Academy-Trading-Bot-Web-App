@@ -7,6 +7,13 @@ import { api } from "@shared/routes";
 import { useRuntimeEvents } from "@/context/runtime-events";
 import { apiFetch } from "@/lib/api";
 
+type ParamDef =
+  | { key: string; label: string; type: "number"; default: number; min?: number; max?: number; step?: number; help?: string }
+  | { key: string; label: string; type: "select"; default: string; options: { value: string; label: string }[]; help?: string }
+  | { key: string; label: string; type: "boolean"; default: boolean; help?: string };
+
+type StrategyMeta = { id: string; name: string; description?: string; params: ParamDef[] };
+
 export default function BotCenter() {
   const { toast } = useToast();
   const { data: accounts } = useAccounts();
@@ -29,6 +36,27 @@ export default function BotCenter() {
     duration_unit: "m" as "m" | "h" | "d" | "t",
   });
   const [showSettings, setShowSettings] = useState(false);
+  const [catalog, setCatalog] = useState<StrategyMeta[]>([]);
+
+  // Load strategies from server folder (auto-updates when you add a new one and export it)
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await apiFetch("/api/strategies/catalog");
+        const list = (await r.json()) as StrategyMeta[];
+        setCatalog(list);
+        if (!list.find((s) => s.id === strategyId) && list.length) {
+          setStrategyId(list[0].id);
+          // seed params with strategy defaults if any
+          const defaults: Record<string, any> = {};
+          for (const p of list[0].params) defaults[p.key] = (p as any).default;
+          setParams((prev) => ({ ...defaults, ...prev }));
+        }
+      } catch {
+        /* ignore */
+      }
+    })();
+  }, []);
 
   // default account
   useEffect(() => {
@@ -46,10 +74,19 @@ export default function BotCenter() {
     });
   }, [timeframe]);
 
+  // When strategy changes, layer its default params (only for the keys it defines)
+  useEffect(() => {
+    const meta = catalog.find((s) => s.id === strategyId);
+    if (!meta) return;
+    const defaults: Record<string, any> = {};
+    for (const p of meta.params) defaults[p.key] = (p as any).default;
+    setParams((prev) => ({ ...defaults, ...prev }));
+  }, [strategyId, catalog]);
+
   // load saved settings for this combo
   useEffect(() => {
     (async () => {
-      if (!accountId) return;
+      if (!accountId || !strategyId) return;
       try {
         const r = await apiFetch(`/api/strategies/settings/${accountId}`);
         const list = (await r.json()) as any[];
@@ -202,8 +239,8 @@ export default function BotCenter() {
           <div>
             <label className="block text-sm">Strategy</label>
             <select className="w-full rounded-lg border border-border bg-background px-3 py-2" value={strategyId} onChange={(e) => setStrategyId(e.target.value)}>
-              {["candle_pattern", "one_hour_trend", "trend_confirmation", "scalping_hwr", "trend_pullback", "supply_demand_sweep", "fvg_retracement", "range_mean_reversion"].map((s) => (
-                <option key={s} value={s}>{s}</option>
+              {catalog.map((s) => (
+                <option key={s.id} value={s.id}>{s.name ?? s.id}</option>
               ))}
             </select>
           </div>
@@ -247,6 +284,7 @@ export default function BotCenter() {
       {showSettings && (
         <StrategySettingsModal
           params={params}
+          fields={(catalog.find((s) => s.id === strategyId)?.params ?? [])}
           onClose={() => setShowSettings(false)}
           onSave={async (next) => {
             setParams(next);
@@ -259,12 +297,16 @@ export default function BotCenter() {
   );
 }
 
-function StrategySettingsModal({ params, onSave, onClose }: {
-  params: { stake: number; duration: number; duration_unit: "m"|"h"|"d"|"t" };
+function StrategySettingsModal({ params, onSave, onClose, fields }: {
+  params: { stake: number; duration: number; duration_unit: "m"|"h"|"d"|"t"; [k: string]: any };
+  fields: ParamDef[];
   onSave: (p: any) => void;
   onClose: () => void;
 }) {
   const [form, setForm] = useState(params);
+
+  const setField = (key: string, value: any) => setForm((f) => ({ ...f, [key]: value }));
+
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4">
       <div className="w-full max-w-lg rounded-2xl border border-border bg-card p-5">
@@ -272,22 +314,23 @@ function StrategySettingsModal({ params, onSave, onClose }: {
         <div className="text-sm text-muted-foreground mb-4">Adjust the parameters.</div>
 
         <div className="space-y-3">
+          {/* Always show generic stake + expiry */}
           <div>
             <label className="block text-sm mb-1">Stake ($)</label>
             <input type="number" className="w-full rounded-lg border border-border bg-background px-3 py-2"
-              value={form.stake} onChange={(e) => setForm({ ...form, stake: Number(e.target.value) })}/>
+              value={form.stake ?? 0} onChange={(e) => setField("stake", Number(e.target.value))}/>
           </div>
 
           <div className="grid gap-3 md:grid-cols-2">
             <div>
               <label className="block text-sm mb-1">{form.duration_unit === "t" ? "Tick Count" : "Expiry Duration"}</label>
               <input type="number" min={1} className="w-full rounded-lg border border-border bg-background px-3 py-2"
-                value={form.duration} onChange={(e) => setForm({ ...form, duration: Number(e.target.value) })}/>
+                value={form.duration ?? 1} onChange={(e) => setField("duration", Number(e.target.value))}/>
             </div>
             <div>
               <label className="block text-sm mb-1">Unit</label>
               <select className="w-full rounded-lg border border-border bg-background px-3 py-2"
-                value={form.duration_unit} onChange={(e) => setForm({ ...form, duration_unit: e.target.value as any })}>
+                value={form.duration_unit ?? "m"} onChange={(e) => setField("duration_unit", e.target.value)}>
                 <option value="t">Ticks</option>
                 <option value="m">Minutes</option>
                 <option value="h">Hours</option>
@@ -295,6 +338,57 @@ function StrategySettingsModal({ params, onSave, onClose }: {
               </select>
             </div>
           </div>
+
+          {/* Dynamic, strategy-specific fields */}
+          {fields.length > 0 && (
+            <div className="space-y-3">
+              {fields.map((f) => {
+                if (f.type === "number") {
+                  return (
+                    <div key={f.key}>
+                      <label className="block text-sm mb-1">{f.label}</label>
+                      <input
+                        type="number"
+                        className="w-full rounded-lg border border-border bg-background px-3 py-2"
+                        value={form[f.key] ?? f.default}
+                        min={f.min}
+                        max={f.max}
+                        step={f.step ?? 1}
+                        onChange={(e) => setField(f.key, Number(e.target.value))}
+                      />
+                      {f.help && <div className="mt-1 text-xs text-muted-foreground">{f.help}</div>}
+                    </div>
+                  );
+                }
+                if (f.type === "select") {
+                  return (
+                    <div key={f.key}>
+                      <label className="block text-sm mb-1">{f.label}</label>
+                      <select
+                        className="w-full rounded-lg border border-border bg-background px-3 py-2"
+                        value={form[f.key] ?? f.default}
+                        onChange={(e) => setField(f.key, e.target.value)}
+                      >
+                        {f.options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                      </select>
+                      {f.help && <div className="mt-1 text-xs text-muted-foreground">{f.help}</div>}
+                    </div>
+                  );
+                }
+                // boolean
+                return (
+                  <label key={f.key} className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={!!(form[f.key] ?? f.default)}
+                      onChange={(e) => setField(f.key, e.target.checked)}
+                    />
+                    {f.label}
+                  </label>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         <div className="mt-5 flex items-center justify-end gap-2">
