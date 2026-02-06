@@ -1,5 +1,7 @@
 import { z } from "zod";
-import type { AccountType, BotState, StrategyId, Timeframe, TradingMode } from "./types";
+
+export const zTimeframe = z.enum(["1s","1m","3m","5m","15m","30m","1h","2h","4h","1d"]);
+export type Timeframe = z.infer<typeof zTimeframe>;
 
 export const zUuid = z.string().uuid();
 export const zIsoDate = z.string();

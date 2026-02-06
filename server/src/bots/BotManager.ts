@@ -106,7 +106,9 @@ export class BotManager {
     this.hub.log("bot.configs", { userId, configs: bot.configs });
 
     bot.timer = setInterval(() => {
-      void this.tick(bot).catch((e) => this.hub.log("tick error", { error: String(e) }));
+      void this.tick(bot).catch((e: any) =>
+        this.hub.log(`tick error: ${e?.stack || e?.message || String(e)}`)
+      );
     }, 5000);
 
     this.hub.status(this.getStatus(userId));
@@ -159,7 +161,14 @@ export class BotManager {
     this.hub.status(this.getStatus(bot.userId));
 
     for (const cfg of bot.configs.filter((c) => c.enabled)) {
-      await this.runConfig(bot, cfg);
+      try {
+        await this.runConfig(bot, cfg);
+      } catch (e: any) {
+        this.hub.log(
+          `runConfig error: ${e?.stack || e?.message || String(e)}`,
+          { symbol: cfg.symbol, timeframe: cfg.timeframe, strategy_id: cfg.strategy_id }
+        );
+      }
     }
   }
 

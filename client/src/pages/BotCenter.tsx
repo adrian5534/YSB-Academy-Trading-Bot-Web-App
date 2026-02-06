@@ -261,6 +261,7 @@ export default function BotCenter() {
               <div key={i} className="whitespace-pre-wrap">
                 <span className="text-muted-foreground">{new Date(l.ts).toLocaleTimeString()} </span>
                 {l.message}
+                {l.meta ? ` ${(() => { try { return JSON.stringify(l.meta); } catch { return ""; } })()}` : ""}
               </div>
             ))}
           </div>
