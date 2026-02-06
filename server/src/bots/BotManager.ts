@@ -46,6 +46,7 @@ export class BotManager {
   constructor(private hub: WsHub) {
     // create deriv client and attach safe handler
     this.deriv = new DerivClient(/* token? */);
+
     interface DerivTick {
       epoch: number;
       quote?: number;
@@ -60,14 +61,16 @@ export class BotManager {
 
     this.deriv.setOnMessage((msg: DerivWsMessage): void => {
       try {
-      // only handle tick messages here; ignore others
-      if (msg?.tick) {
-        this.handleTickSafely(msg.tick);
-      }
+        // only handle tick messages here; ignore others
+        if (msg?.tick) {
+          this.handleTickSafely(msg.tick);
+        }
       } catch (e: unknown) {
-      console.error("tick error", (e as any) && ((e as any).stack || (e as any).message || e));
-      // optional: log raw payload for debugging
-      try { console.debug("tick payload:", JSON.stringify(msg)); } catch {}
+        console.error("tick error", (e as any) && ((e as any).stack || (e as any).message || e));
+        // optional: log raw payload for debugging
+        try {
+          console.debug("tick payload:", JSON.stringify(msg));
+        } catch {}
       }
     });
   }
@@ -121,6 +124,17 @@ export class BotManager {
     const existing = this.derivClients.get(accountId);
     if (existing) return existing;
     const c = new DerivClient(token);
+    // attach same safe handler to per-account client
+    c.setOnMessage((msg: any) => {
+      try {
+        if (msg?.tick) this.handleTickSafely(msg.tick);
+      } catch (e) {
+        console.error("tick error (per-account)", (e as any) && ((e as any).stack || (e as any).message || e));
+        try {
+          console.debug("tick payload (per-account):", JSON.stringify(msg));
+        } catch {}
+      }
+    });
     await c.connect();
     this.derivClients.set(accountId, c);
     return c;
@@ -352,10 +366,46 @@ export class BotManager {
 
   private handleTickSafely(tick: any) {
     // existing tick processing moved here (defensive, with sanity checks)
-    if (!tick || typeof tick.epoch !== "number") {
-      console.debug("ignoring malformed tick", tick);
-      return;
+    try {
+      if (!tick || typeof tick.epoch !== "number") {
+        console.debug("ignoring malformed tick", tick);
+        return;
+      }
+
+      // Basic sanity: ensure symbol and quote present
+      const symbol = String(tick.symbol ?? "").trim();
+      const epoch = Number(tick.epoch);
+      const quote = typeof tick.quote === "number" ? tick.quote : tick.quote ? Number(tick.quote) : undefined;
+
+      if (!symbol) {
+        console.debug("ignoring tick with no symbol", tick);
+        return;
+      }
+
+      // Lightweight handling: surface ticks to connected clients for visibility
+      // and optionally correlate to running bot configs (non-blocking).
+      try {
+        this.hub.log("tick", { symbol, epoch, quote });
+      } catch {
+        /* ignore hub logging errors */
+      }
+
+      // If any running bot config watches this symbol we could trigger logic here.
+      // Keep this cheap and defensive to avoid spamming or throwing.
+      for (const bot of this.running.values()) {
+        const matches = bot.configs.some((c) => c.enabled && c.symbol === symbol);
+        if (matches) {
+          // emit a cheap heartbeat/log for the specific user to help debugging.
+          try {
+            this.hub.log("tick match", { userId: bot.userId, symbol, epoch });
+          } catch {}
+        }
+      }
+    } catch (e) {
+      console.error("tick error (final)", (e as any) && ((e as any).stack || (e as any).message || e));
+      try {
+        console.debug("tick payload (final):", JSON.stringify(tick));
+      } catch {}
     }
-    // ...existing processing logic...
   }
 }
