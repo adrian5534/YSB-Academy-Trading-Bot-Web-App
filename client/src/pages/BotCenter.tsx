@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo } from "react";
 import { useAccounts } from "@/hooks/use-accounts";
 import { useStartBot, useStopBot, useBotStatus } from "@/hooks/use-bots";
 import { useSubscription } from "@/hooks/use-subscription";
@@ -8,6 +8,8 @@ import { STRATEGY_SETTINGS, EXECUTION_FIELDS, getStrategyDefaults } from "@share
 import { useRuntimeEvents } from "@/context/runtime-events";
 import { apiFetch } from "@/lib/api";
 import { useKeepAlive } from "@/hooks/use-keep-alive";
+import { usePersistedState } from "@/hooks/use-persisted-state";
+import { useState as reactUseState } from "react";
 
 export default function BotCenter() {
   const { toast } = useToast();
@@ -20,17 +22,17 @@ export default function BotCenter() {
   const { logs, connected, clearLogs } = useRuntimeEvents();
 
   const availableAccounts = useMemo(() => accounts ?? [], [accounts]);
-  const [accountId, setAccountId] = useState<string>("");
-  const [symbol, setSymbol] = useState("R_100");
-  const [timeframe, setTimeframe] = useState("1m");
-  const [strategyId, setStrategyId] = useState<string>("");
-  const [mode, setMode] = useState<"backtest" | "paper" | "live">("paper");
-  const [params, setParams] = useState({
-     stake: 250,
-     duration: 5,
-     duration_unit: "m" as "m" | "h" | "d",
-   });
-  const [showSettings, setShowSettings] = useState(false);
+  const [accountId, setAccountId] = usePersistedState<string>("bot:accountId", "");
+  const [symbol, setSymbol] = usePersistedState<string>("bot:symbol", "R_100");
+  const [timeframe, setTimeframe] = usePersistedState<string>("bot:timeframe", "1m");
+  const [strategyId, setStrategyId] = usePersistedState<string>("bot:strategyId", "");
+  const [mode, setMode] = usePersistedState<"backtest" | "paper" | "live">("bot:mode", "paper");
+  const [params, setParams] = usePersistedState<Record<string, any>>("bot:params", {
+    stake: 250,
+    duration: 5,
+    duration_unit: "m" as "m" | "h" | "d",
+  });
+  const [showSettings, setShowSettings] = usePersistedState<boolean>("bot:showSettings", false);
 
   // Keep server awake while this page is open (poll /api/health every 4 minutes)
   useKeepAlive(true, 240_000);
@@ -399,4 +401,7 @@ function StrategySettingsModal({ params, onSave, onClose, fields }: {
        </div>
      </div>
    );
+}
+function useState(params: { [k: string]: any; stake: number; duration: number; duration_unit: "m" | "h" | "d" | "t"; }): [any, any] {
+  return reactUseState(params);
 }
