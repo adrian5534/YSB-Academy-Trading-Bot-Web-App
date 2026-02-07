@@ -374,6 +374,21 @@ export class BotManager {
     this.hub.log("paper trade", { symbol: cfg.symbol, side: signal.side, profit });
   }
 
+  // Replace running configs for a user (preserves config ids) and apply immediately
+  public async updateConfigs(userId: string, configs: Omit<BotConfig, "id">[]) {
+    const bot = this.running.get(userId);
+    if (!bot) throw new Error("Bot not running");
+    bot.configs = configs.map((c) => ({ ...c, id: uuidv4() }));
+    this.hub.log("bot.configs.updated", { userId, configs: bot.configs });
+    this.hub.status(this.getStatus(userId));
+    // Optionally trigger an immediate tick for the new configs
+    try {
+      await this.tick(bot);
+    } catch (e) {
+      this.hub.log("apply-configs error", { error: String(e) });
+    }
+  }
+
   private handleTickSafely(tick: any) {
     // existing tick processing moved here (defensive, with sanity checks)
     try {

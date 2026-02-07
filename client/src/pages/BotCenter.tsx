@@ -277,8 +277,31 @@ export default function BotCenter() {
             setParams(next);
             await persistSettings(next);
             setShowSettings(false);
+
+            // If bot is running, restart it with updated config so BotManager uses new params
+            try {
+              if (status?.state === "running") {
+                await startBot.mutateAsync({
+                  name: "YSB Bot",
+                  configs: [
+                    {
+                      account_id: accountId,
+                      symbol,
+                      timeframe,
+                      strategy_id: strategyId,
+                      mode,
+                      params: next,
+                      enabled: true,
+                    },
+                  ],
+                });
+                toast({ title: "Bot restarted", description: "Applied new settings to running bot." });
+              }
+            } catch (e: any) {
+              toast({ title: "Restart failed", description: String(e?.message ?? e), variant: "destructive" });
+            }
           }}
-        />
+         />
       )}
     </div>
   );
