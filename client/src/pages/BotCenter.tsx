@@ -11,7 +11,18 @@ import { useKeepAlive } from "@/hooks/use-keep-alive";
 import { usePersistedState } from "@/hooks/use-persisted-state";
 import { useState as reactUseState } from "react";
 
-const MAX_TOTAL_CARDS = 4; // primary + extras (limit lowered from 6 to 4)
+const MAX_TOTAL_CARDS = 4; // primary + extras (hard limit)
+
+type BotCfg = {
+  id?: string; // present for extra cards
+  account_id: string;
+  symbol: string;
+  timeframe: string;
+  strategy_id: string;
+  mode: "backtest" | "paper" | "live";
+  params: Record<string, any>;
+  enabled?: boolean;
+};
 
 export default function BotCenter() {
   const { toast } = useToast();
@@ -40,7 +51,7 @@ export default function BotCenter() {
   const [bots, setBots] = usePersistedState<any[]>("bot:configs", []);
   const [editingBotId, setEditingBotId] = reactUseState<string | null>(null);
 
-  // Keep server awake while this page is open (poll /api/health every 4 minutes)
+  // Keep server awake
   useKeepAlive(true, 240_000);
 
   // default account
@@ -73,7 +84,7 @@ export default function BotCenter() {
       strategy_id: strategyId || "",
       mode,
       params: { ...params },
-      enabled: true,
+      enabled: false, // default disabled to avoid server-side auto-starts
     };
     setBots((s) => [...s, b]);
     toast({ title: "Bot added", description: `${b.symbol} · ${b.strategy_id || "no-strategy"}` });
@@ -116,31 +127,67 @@ export default function BotCenter() {
 
   const isPro = sub?.plan === "pro";
 
-  // Primary start: ONLY start the primary config with a unique run name
+  // helpers to build and identify configs
+  const primaryConfig = (): BotCfg | null =>
+    accountId && strategyId
+      ? { account_id: accountId, symbol, timeframe, strategy_id: strategyId, mode, params: { ...params }, enabled: false }
+      : null;
+
+  const allConfigs = (): BotCfg[] => {
+    const p = primaryConfig();
+    return [...(p ? [p] : []), ...bots.map((b) => ({ account_id: b.account_id, symbol: b.symbol, timeframe: b.timeframe, strategy_id: b.strategy_id, mode: b.mode, params: { ...(b.params || {}) }, enabled: false }))];
+  };
+
+  const keyOf = (c: BotCfg) => `${c.account_id}__${c.symbol}__${c.timeframe}__${c.strategy_id}`;
+
+  // Ensure only target config is enabled server-side to prevent "start all"
+  const enableOnlyThisConfig = async (target: BotCfg) => {
+    const list = allConfigs().filter((c) => c.account_id && c.strategy_id);
+    const targetKey = keyOf(target);
+    for (const c of list) {
+      try {
+        await apiFetch(api.strategies.setSettings.path, {
+          method: "POST",
+          body: JSON.stringify({
+            account_id: c.account_id,
+            symbol: c.symbol,
+            timeframe: c.timeframe,
+            strategy_id: c.strategy_id,
+            params: c.params,
+            enabled: keyOf(c) === targetKey, // only the one we start is enabled
+          }),
+        });
+      } catch {
+        /* ignore individual errors to continue */
+      }
+    }
+  };
+
+  // Primary start: ONLY start the primary config
   const start = async () => {
     try {
       if (!isPro && (mode === "paper" || mode === "live")) {
         toast({ title: "Upgrade required", description: "Paper/Live trading requires Pro plan.", variant: "destructive" });
         return;
       }
-      if (!accountId || !strategyId) {
+      const cfg = primaryConfig();
+      if (!cfg) {
         toast({ title: "Missing fields", description: "Select account and strategy.", variant: "destructive" });
         return;
       }
-      // Persist without globally enabling to avoid server auto-start of others
-      await persistSettings({ ...params }, false);
+      await enableOnlyThisConfig(cfg);
 
-      const runName = `YSB Bot - ${symbol}-${timeframe}-${strategyId}`;
+      const runName = `YSB Bot - ${cfg.symbol}-${cfg.timeframe}-${cfg.strategy_id}`;
       await startBot.mutateAsync({
         name: runName,
         configs: [
           {
-            account_id: accountId,
-            symbol,
-            timeframe,
-            strategy_id: strategyId,
-            mode,
-            params,
+            account_id: cfg.account_id,
+            symbol: cfg.symbol,
+            timeframe: cfg.timeframe,
+            strategy_id: cfg.strategy_id,
+            mode: cfg.mode,
+            params: cfg.params,
             enabled: true,
           },
         ],
@@ -160,7 +207,7 @@ export default function BotCenter() {
     }
   };
 
-  // Extra card start: ONLY start that card's config with a unique run name
+  // Extra card start: ONLY start that card's config
   const startSingle = async (b: any) => {
     try {
       if (!isPro && (b.mode === "paper" || b.mode === "live")) {
@@ -171,20 +218,19 @@ export default function BotCenter() {
         toast({ title: "Missing fields", description: "Select account and strategy.", variant: "destructive" });
         return;
       }
-      // Persist without globally enabling
-      await apiFetch(api.strategies.setSettings.path, {
-        method: "POST",
-        body: JSON.stringify({
-          account_id: b.account_id,
-          symbol: b.symbol,
-          timeframe: b.timeframe,
-          strategy_id: b.strategy_id,
-          params: b.params,
-          enabled: false,
-        }),
-      }).catch(() => void 0);
+      const cfg: BotCfg = {
+        account_id: b.account_id,
+        symbol: b.symbol,
+        timeframe: b.timeframe,
+        strategy_id: b.strategy_id,
+        mode: b.mode,
+        params: b.params,
+        enabled: false,
+      };
 
-      const runName = `YSB Bot - ${b.symbol}-${b.timeframe}-${b.strategy_id}-${b.id.slice(-4)}`;
+      await enableOnlyThisConfig(cfg);
+
+      const runName = `YSB Bot - ${b.symbol}-${b.timeframe}-${b.strategy_id}-${String(b.id || "").slice(-4)}`;
       await startBot.mutateAsync({
         name: runName,
         configs: [
@@ -245,26 +291,6 @@ export default function BotCenter() {
     })();
   }, [accountId, symbol, timeframe, strategyId]);
 
-  // Persist helper (do not enable globally)
-  const persistSettings = async (next = params, enabled = false) => {
-    if (!accountId) return;
-    try {
-      await apiFetch(api.strategies.setSettings.path, {
-        method: "POST",
-        body: JSON.stringify({
-          account_id: accountId,
-          symbol,
-          timeframe,
-          strategy_id: strategyId,
-          params: next,
-          enabled, // keep false to avoid starting all on server
-        }),
-      });
-    } catch {
-      /* ignore */
-    }
-  };
-
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -277,10 +303,10 @@ export default function BotCenter() {
       <div className="text-sm text-muted-foreground">Manage strategy & execution</div>
 
       {/* Cards grid: primary + extra cards + "Add Bot" card, responsive left-to-right */}
-      <div className="grid gap-4 grid-cols-1 sm:grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+      <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
         {/* Primary card */}
         <div className="rounded-2xl border border-border bg-card p-4 space-y-4">
-          <div className="grid gap-3 md:grid-cols-2">
+          <div className="grid gap-3 sm:grid-cols-2">
             <div className="rounded-xl border border-border bg-background p-3">
               <div className="text-sm text-muted-foreground">Strategy</div>
               <div className="mt-1 font-mono text-lg">{strategyId ? strategyId.toUpperCase() : "—"}</div>
@@ -310,7 +336,7 @@ export default function BotCenter() {
             )}
           </div>
 
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
             <div>
               <label className="block text-sm">Account</label>
               <select className="w-full rounded-lg border border-border bg-background px-3 py-2" value={accountId} onChange={(e) => setAccountId(e.target.value)}>
@@ -347,7 +373,7 @@ export default function BotCenter() {
               disabled={!strategyId || (!isPro && (mode === "paper" || mode === "live"))}
               className={`rounded-lg px-3 py-2 font-semibold ${(!strategyId || (!isPro && (mode === "paper" || mode === "live"))) ? "border border-border bg-muted text-muted-foreground cursor-not-allowed" : "bg-ysbPurple text-ysbYellow hover:opacity-90"}`}
             >
-              {status?.state === "running" ? "RESTART" : "START"}
+              START
             </button>
             <button onClick={stop} className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground">Stop</button>
             <div className="ml-auto flex items-center gap-2">
@@ -366,7 +392,7 @@ export default function BotCenter() {
         {/* Extra bot cards (identical layout) */}
         {bots.map((b) => (
           <div key={b.id} className="rounded-2xl border border-border bg-card p-4 space-y-4">
-            <div className="grid gap-3 md:grid-cols-2">
+            <div className="grid gap-3 sm:grid-cols-2">
               <div className="rounded-xl border border-border bg-background p-3">
                 <div className="text-sm text-muted-foreground">Strategy</div>
                 <div className="mt-1 font-mono text-lg">{b.strategy_id ? String(b.strategy_id).toUpperCase() : "—"}</div>
@@ -396,7 +422,7 @@ export default function BotCenter() {
               )}
             </div>
 
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
               <div>
                 <label className="block text-sm">Account</label>
                 <select className="w-full rounded-lg border border-border bg-background px-3 py-2" value={b.account_id} onChange={(e) => updateBot(b.id, { account_id: e.target.value })}>
@@ -433,7 +459,7 @@ export default function BotCenter() {
                 disabled={!b.strategy_id || !b.account_id || (!isPro && (b.mode === "paper" || b.mode === "live"))}
                 className={`rounded-lg px-3 py-2 font-semibold ${(!b.strategy_id || !b.account_id || (!isPro && (b.mode === "paper" || b.mode === "live"))) ? "border border-border bg-muted text-muted-foreground cursor-not-allowed" : "bg-ysbPurple text-ysbYellow hover:opacity-90"}`}
               >
-                {status?.state === "running" ? "RESTART" : "START"}
+                START
               </button>
               <button onClick={stop} className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground">Stop</button>
               <div className="ml-auto flex items-center gap-2">
@@ -468,7 +494,7 @@ export default function BotCenter() {
           </div>
         ))}
 
-        {/* Add Bot card occupies the next grid cell */}
+        {/* Add Bot card occupies the next grid cell (visible until 4 total) */}
         {totalCards < MAX_TOTAL_CARDS && (
           <button
             type="button"
@@ -484,7 +510,7 @@ export default function BotCenter() {
         )}
       </div>
 
-      {/* Live logs moved below, full-width responsive */}
+      {/* Live logs below */}
       <div className="rounded-2xl border border-border bg-card p-4">
         <div className="flex items-center justify-between mb-2">
           <div className="font-semibold">Live logs</div>
@@ -527,7 +553,7 @@ export default function BotCenter() {
               const b = bots.find(x=>x.id===editingBotId);
               if (b) {
                 updateBot(editingBotId, { params: next });
-                // Persist without enabling globally
+                // Persist disabled by default
                 await apiFetch(api.strategies.setSettings.path, {
                   method: "POST",
                   body: JSON.stringify({
@@ -542,7 +568,20 @@ export default function BotCenter() {
               }
             } else {
               setParams(next);
-              await persistSettings(next, false);
+              // Persist disabled by default
+              if (accountId && strategyId) {
+                await apiFetch(api.strategies.setSettings.path, {
+                  method: "POST",
+                  body: JSON.stringify({
+                    account_id: accountId,
+                    symbol,
+                    timeframe,
+                    strategy_id: strategyId,
+                    params: next,
+                    enabled: false,
+                  }),
+                }).catch(() => void 0);
+              }
             }
             setShowSettings(false);
             setEditingBotId(null);
@@ -574,7 +613,7 @@ function StrategySettingsModal({ params, onSave, onClose, fields }: {
            </div>
 
            {!!fields.length && (
-             <div className="grid gap-3 md:grid-cols-2">
+             <div className="grid gap-3 sm:grid-cols-2">
                {fields.map((f) => (
                  <div key={f.key}>
                    <label className="block text-sm mb-1">{f.label}</label>
@@ -606,7 +645,7 @@ function StrategySettingsModal({ params, onSave, onClose, fields }: {
              </div>
            )}
 
-           <div className="grid gap-3 md:grid-cols-2">
+           <div className="grid gap-3 sm:grid-cols-2">
              <div>
                <label className="block text-sm mb-1">{form.duration_unit === "t" ? "Tick Count" : "Expiry Duration"}</label>
                <input type="number" min={1} className="w-full rounded-lg border border-border bg-background px-3 py-2"
