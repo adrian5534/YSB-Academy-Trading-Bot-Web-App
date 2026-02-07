@@ -11,6 +11,8 @@ import { useKeepAlive } from "@/hooks/use-keep-alive";
 import { usePersistedState } from "@/hooks/use-persisted-state";
 import { useState as reactUseState } from "react";
 
+const MAX_TOTAL_CARDS = 4; // primary + extras (limit lowered from 6 to 4)
+
 export default function BotCenter() {
   const { toast } = useToast();
   const { data: accounts } = useAccounts();
@@ -56,7 +58,13 @@ export default function BotCenter() {
 
   const makeId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 
+  const totalCards = 1 + bots.length; // primary + extras
+
   const addBot = () => {
+    if (totalCards >= MAX_TOTAL_CARDS) {
+      toast({ title: "Limit reached", description: `Maximum of ${MAX_TOTAL_CARDS} cards.` });
+      return;
+    }
     const b = {
       id: makeId(),
       account_id: accountId || (availableAccounts[0]?.id ?? ""),
@@ -108,7 +116,7 @@ export default function BotCenter() {
 
   const isPro = sub?.plan === "pro";
 
-  // Primary start: ONLY start the primary config
+  // Primary start: ONLY start the primary config with a unique run name
   const start = async () => {
     try {
       if (!isPro && (mode === "paper" || mode === "live")) {
@@ -119,9 +127,12 @@ export default function BotCenter() {
         toast({ title: "Missing fields", description: "Select account and strategy.", variant: "destructive" });
         return;
       }
-      await persistSettings({ ...params }, /*enabled*/ false);
+      // Persist without globally enabling to avoid server auto-start of others
+      await persistSettings({ ...params }, false);
+
+      const runName = `YSB Bot - ${symbol}-${timeframe}-${strategyId}`;
       await startBot.mutateAsync({
-        name: "YSB Bot",
+        name: runName,
         configs: [
           {
             account_id: accountId,
@@ -134,7 +145,7 @@ export default function BotCenter() {
           },
         ],
       });
-      toast({ title: "Bot started", description: "Streaming logs via WebSocket." });
+      toast({ title: "Bot started", description: "Primary bot is running." });
     } catch (e: any) {
       toast({ title: "Start failed", description: String(e.message ?? e), variant: "destructive" });
     }
@@ -149,7 +160,7 @@ export default function BotCenter() {
     }
   };
 
-  // Extra card start: ONLY start that card's config
+  // Extra card start: ONLY start that card's config with a unique run name
   const startSingle = async (b: any) => {
     try {
       if (!isPro && (b.mode === "paper" || b.mode === "live")) {
@@ -160,7 +171,7 @@ export default function BotCenter() {
         toast({ title: "Missing fields", description: "Select account and strategy.", variant: "destructive" });
         return;
       }
-      // Persist without enabling globally (avoid starting all server-side)
+      // Persist without globally enabling
       await apiFetch(api.strategies.setSettings.path, {
         method: "POST",
         body: JSON.stringify({
@@ -173,8 +184,9 @@ export default function BotCenter() {
         }),
       }).catch(() => void 0);
 
+      const runName = `YSB Bot - ${b.symbol}-${b.timeframe}-${b.strategy_id}-${b.id.slice(-4)}`;
       await startBot.mutateAsync({
-        name: "YSB Bot",
+        name: runName,
         configs: [
           {
             account_id: b.account_id,
@@ -264,102 +276,91 @@ export default function BotCenter() {
       </div>
       <div className="text-sm text-muted-foreground">Manage strategy & execution</div>
 
-      {/* Cards grid: primary + extra cards, responsive left-to-right */}
-      <div className="grid gap-4 grid-cols-1 sm:grid-cols-1 md:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3">
+      {/* Cards grid: primary + extra cards + "Add Bot" card, responsive left-to-right */}
+      <div className="grid gap-4 grid-cols-1 sm:grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
         {/* Primary card */}
-        <div className="relative">
-          <div className="rounded-2xl border border-border bg-card p-4 space-y-4">
-            <div className="grid gap-3 md:grid-cols-2">
-              <div className="rounded-xl border border-border bg-background p-3">
-                <div className="text-sm text-muted-foreground">Strategy</div>
-                <div className="mt-1 font-mono text-lg">{strategyId ? strategyId.toUpperCase() : "—"}</div>
-              </div>
-              <div className="rounded-xl border border-border bg-background p-3">
-                <div className="text-sm text-muted-foreground">Stake</div>
-                <div className="mt-1 font-mono text-lg">${params.stake}</div>
-              </div>
-            </div>
-
+        <div className="rounded-2xl border border-border bg-card p-4 space-y-4">
+          <div className="grid gap-3 md:grid-cols-2">
             <div className="rounded-xl border border-border bg-background p-3">
-              <div className="text-sm text-muted-foreground mb-2">Settings</div>
-              {!strategyId ? (
-                <div className="text-xs text-muted-foreground">Select a strategy to configure.</div>
-              ) : (
-                <div className="flex flex-wrap items-center gap-x-6 gap-y-2 font-mono">
-                  {Object.entries(params)
-                    .filter(([k]) => !["stake", "duration", "duration_unit"].includes(k))
-                    .slice(0, 5)
-                    .map(([k, v]) => (
-                      <div key={k}>
-                        {k}: <span className="text-foreground">{String(v)}</span>
-                      </div>
-                    ))}
-                  <div>Expiry: <span className="text-foreground">{params.duration}{params.duration_unit}</span></div>
-                </div>
-              )}
+              <div className="text-sm text-muted-foreground">Strategy</div>
+              <div className="mt-1 font-mono text-lg">{strategyId ? strategyId.toUpperCase() : "—"}</div>
             </div>
-
-            <div className="grid grid-cols-3 gap-2">
-              <div>
-                <label className="block text-sm">Account</label>
-                <select className="w-full rounded-lg border border-border bg-background px-3 py-2" value={accountId} onChange={(e) => setAccountId(e.target.value)}>
-                  {availableAccounts.map((a: any) => (
-                    <option key={a.id} value={a.id}>{a.label} {a.type ? `(${a.type})` : ""}</option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm">Symbol</label>
-                <input className="w-full rounded-lg border border-border bg-background px-3 py-2" value={symbol} onChange={(e) => setSymbol(e.target.value)} />
-              </div>
-              <div>
-                <label className="block text-sm">Timeframe</label>
-                <select className="w-full rounded-lg border border-border bg-background px-3 py-2" value={timeframe} onChange={(e) => setTimeframe(e.target.value)}>
-                  {["1s", "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "1d"].map((t) => <option key={t} value={t}>{t}</option>)}
-                </select>
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-sm">Strategy</label>
-              <select className="w-full rounded-lg border border-border bg-background px-3 py-2" value={strategyId} onChange={(e) => setStrategyId(e.target.value)}>
-                <option value="">Select a strategy…</option>
-                {["candle_pattern", "one_hour_trend", "trend_confirmation", "scalping_hwr", "trend_pullback", "supply_demand_sweep", "fvg_retracement", "range_mean_reversion"].map((s) => (
-                  <option key={s} value={s}>{s}</option>
-                ))}
-              </select>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <button
-                onClick={start}
-                disabled={!strategyId || (!isPro && (mode === "paper" || mode === "live"))}
-                className={`rounded-lg px-3 py-2 font-semibold ${(!strategyId || (!isPro && (mode === "paper" || mode === "live"))) ? "border border-border bg-muted text-muted-foreground cursor-not-allowed" : "bg-ysbPurple text-ysbYellow hover:opacity-90"}`}
-              >
-                {status?.state === "running" ? "RESTART" : "START"}
-              </button>
-              <button onClick={stop} className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground">Stop</button>
-              <div className="ml-auto flex items-center gap-2">
-                <select className="rounded-lg border border-border bg-background px-3 py-2 text-sm" value={mode} onChange={(e) => setMode(e.target.value as any)}>
-                  <option value="backtest">Backtest</option>
-                  <option value="paper" disabled={!isPro}>Paper{!isPro ? " (Pro only)" : ""}</option>
-                  <option value="live" disabled={!isPro}>Live{!isPro ? " (Pro only)" : ""}</option>
-                </select>
-                <button type="button" onClick={() => strategyId && setShowSettings(true)} className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted" title="Strategy settings" disabled={!strategyId}>
-                  ⚙️
-                </button>
-              </div>
+            <div className="rounded-xl border border-border bg-background p-3">
+              <div className="text-sm text-muted-foreground">Stake</div>
+              <div className="mt-1 font-mono text-lg">${params.stake}</div>
             </div>
           </div>
 
-          {/* Big + anchored to the right side of the primary card */}
-          <button
-            onClick={addBot}
-            title="Add bot"
-            className="absolute -right-6 top-1/2 -translate-y-1/2 z-10 flex h-14 w-14 items-center justify-center rounded-full bg-ysbPurple text-ysbYellow text-3xl shadow-xl"
-          >
-            +
-          </button>
+          <div className="rounded-xl border border-border bg-background p-3">
+            <div className="text-sm text-muted-foreground mb-2">Settings</div>
+            {!strategyId ? (
+              <div className="text-xs text-muted-foreground">Select a strategy to configure.</div>
+            ) : (
+              <div className="flex flex-wrap items-center gap-x-6 gap-y-2 font-mono">
+                {Object.entries(params)
+                  .filter(([k]) => !["stake", "duration", "duration_unit"].includes(k))
+                  .slice(0, 5)
+                  .map(([k, v]) => (
+                    <div key={k}>
+                      {k}: <span className="text-foreground">{String(v)}</span>
+                    </div>
+                  ))}
+                <div>Expiry: <span className="text-foreground">{params.duration}{params.duration_unit}</span></div>
+              </div>
+            )}
+          </div>
+
+          <div className="grid grid-cols-3 gap-2">
+            <div>
+              <label className="block text-sm">Account</label>
+              <select className="w-full rounded-lg border border-border bg-background px-3 py-2" value={accountId} onChange={(e) => setAccountId(e.target.value)}>
+                {availableAccounts.map((a: any) => (
+                  <option key={a.id} value={a.id}>{a.label} {a.type ? `(${a.type})` : ""}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm">Symbol</label>
+              <input className="w-full rounded-lg border border-border bg-background px-3 py-2" value={symbol} onChange={(e) => setSymbol(e.target.value)} />
+            </div>
+            <div>
+              <label className="block text-sm">Timeframe</label>
+              <select className="w-full rounded-lg border border-border bg-background px-3 py-2" value={timeframe} onChange={(e) => setTimeframe(e.target.value)}>
+                {["1s", "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "1d"].map((t) => <option key={t} value={t}>{t}</option>)}
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-sm">Strategy</label>
+            <select className="w-full rounded-lg border border-border bg-background px-3 py-2" value={strategyId} onChange={(e) => setStrategyId(e.target.value)}>
+              <option value="">Select a strategy…</option>
+              {["candle_pattern", "one_hour_trend", "trend_confirmation", "scalping_hwr", "trend_pullback", "supply_demand_sweep", "fvg_retracement", "range_mean_reversion"].map((s) => (
+                <option key={s} value={s}>{s}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              onClick={start}
+              disabled={!strategyId || (!isPro && (mode === "paper" || mode === "live"))}
+              className={`rounded-lg px-3 py-2 font-semibold ${(!strategyId || (!isPro && (mode === "paper" || mode === "live"))) ? "border border-border bg-muted text-muted-foreground cursor-not-allowed" : "bg-ysbPurple text-ysbYellow hover:opacity-90"}`}
+            >
+              {status?.state === "running" ? "RESTART" : "START"}
+            </button>
+            <button onClick={stop} className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground">Stop</button>
+            <div className="ml-auto flex items-center gap-2">
+              <select className="rounded-lg border border-border bg-background px-3 py-2 text-sm" value={mode} onChange={(e) => setMode(e.target.value as any)}>
+                <option value="backtest">Backtest</option>
+                <option value="paper" disabled={!isPro}>Paper{!isPro ? " (Pro only)" : ""}</option>
+                <option value="live" disabled={!isPro}>Live{!isPro ? " (Pro only)" : ""}</option>
+              </select>
+              <button type="button" onClick={() => strategyId && setShowSettings(true)} className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted" title="Strategy settings" disabled={!strategyId}>
+                ⚙️
+              </button>
+            </div>
+          </div>
         </div>
 
         {/* Extra bot cards (identical layout) */}
@@ -454,10 +455,33 @@ export default function BotCenter() {
                 >
                   ⚙️
                 </button>
+                <button
+                  type="button"
+                  onClick={() => removeBot(b.id)}
+                  className="rounded-lg border border-border px-3 py-2 text-sm text-rose-500 hover:bg-rose-500/10"
+                  title="Remove bot"
+                >
+                  Remove
+                </button>
               </div>
             </div>
           </div>
         ))}
+
+        {/* Add Bot card occupies the next grid cell */}
+        {totalCards < MAX_TOTAL_CARDS && (
+          <button
+            type="button"
+            onClick={addBot}
+            className="rounded-2xl border border-dashed border-border bg-transparent p-4 flex items-center justify-center hover:bg-muted/30 transition-colors"
+            title="Add bot"
+          >
+            <div className="flex flex-col items-center gap-2">
+              <div className="flex h-14 w-14 items-center justify-center rounded-full bg-ysbPurple text-ysbYellow text-3xl shadow-xl">+</div>
+              <div className="text-sm text-muted-foreground">Add bot</div>
+            </div>
+          </button>
+        )}
       </div>
 
       {/* Live logs moved below, full-width responsive */}
