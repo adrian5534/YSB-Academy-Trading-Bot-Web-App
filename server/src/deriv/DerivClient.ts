@@ -3,6 +3,13 @@ import { env } from "../env";
 
 type Pending = { resolve: (v: any) => void; reject: (e: Error) => void; timer: NodeJS.Timeout };
 
+const DEFAULT_APP_ID = 1089;
+const WS_ENDPOINTS = [
+  process.env.DERIV_WS_URL ? String(process.env.DERIV_WS_URL).replace(/\/+$/, "") : "",
+  "wss://ws.derivws.com/websockets/v3",
+  "wss://ws.binaryws.com/websockets/v3",
+].filter(Boolean);
+
 export class DerivClient {
   private ws: WebSocket | null = null;
   private pending = new Map<number, Pending>();
@@ -18,8 +25,25 @@ export class DerivClient {
   async connect(): Promise<void> {
     if (this.isOpen && this.ws) return;
 
-    const appId = String((env as any)?.DERIV_APP_ID ?? 1089);
-    const url = `wss://ws.deriv.com/websockets/v3?app_id=${appId}`;
+    const appId = Number(process.env.DERIV_APP_ID ?? (env as any)?.DERIV_APP_ID ?? DEFAULT_APP_ID);
+    const errors: string[] = [];
+
+    for (const base of WS_ENDPOINTS) {
+      const url = `${base}?app_id=${appId}`;
+      try {
+        await this.openAt(url);
+        if (this.token) await this.send({ authorize: this.token });
+        return;
+      } catch (e: any) {
+        errors.push(`${base}: ${e?.message || String(e)}`);
+        try { await this.disconnect(); } catch {}
+      }
+    }
+
+    throw new Error(`All Deriv endpoints failed: ${errors.join(" | ")}`);
+  }
+
+  private async openAt(url: string): Promise<void> {
     this.ws = new WebSocket(url);
 
     if (!this.boundOnMessage) {
@@ -35,7 +59,9 @@ export class DerivClient {
             if (msg.error) p.reject(new Error(msg.error.message || "Deriv error"));
             else p.resolve(msg);
           } else {
-            try { this.onMessageCallback?.(msg); } catch (cbErr) {
+            try {
+              this.onMessageCallback?.(msg);
+            } catch (cbErr) {
               const e = cbErr as any;
               console.error("[DerivClient] onMessage callback error:", e && (e.stack ?? e.message ?? e));
               try { console.error("[DerivClient] callback message (raw):", JSON.stringify(msg)); } catch {}
@@ -46,6 +72,7 @@ export class DerivClient {
         }
       };
     }
+
     this.ws.on("message", this.boundOnMessage);
 
     await new Promise<void>((resolve, reject) => {
@@ -61,8 +88,6 @@ export class DerivClient {
       this.ws!.once("open", onOpen);
       this.ws!.once("error", onErrorOnce);
     });
-
-    if (this.token) await this.send({ authorize: this.token });
   }
 
   async disconnect(): Promise<void> {
@@ -111,7 +136,7 @@ export class DerivClient {
     return times.map((t, i) => ({ epoch: Number(t), price: Number(prices[i]) }));
   }
 
-  // Retrieve OHLC. For granularity < 60s, aggregate ticks into 1-second candles.
+  // Retrieve OHLC. For 1s, aggregate ticks into 1s candles.
   async candles(symbol: string, granularitySec: number, count: number) {
     if (granularitySec >= 60) {
       const res = await this.send<any>({
@@ -129,13 +154,10 @@ export class DerivClient {
       return candles;
     }
 
-    // Aggregate to 1-second candles from ticks
     if (granularitySec !== 1) throw new Error("Only 1-second granularity supported below 60s");
-    // Over-fetch ticks to ensure enough per-second buckets
     const ticks = await this.getTicks(symbol, Math.max(200, count * 20));
     if (!ticks.length) return [];
 
-    // Build per-second buckets
     const bySecond = new Map<number, number[]>();
     for (const t of ticks) {
       const sec = Math.floor(t.epoch);
@@ -144,8 +166,10 @@ export class DerivClient {
       bySecond.set(sec, arr);
     }
 
-    // Determine continuous last N seconds
-    const lastSec = Math.max(...Array.from(bySecond.keys()));
+    const sortedSeconds = Array.from(bySecond.keys()).sort((a, b) => a - b);
+    const lastSec = sortedSeconds.length
+      ? sortedSeconds[sortedSeconds.length - 1]
+      : Math.floor(ticks[ticks.length - 1].epoch);
     const firstNeeded = lastSec - (count - 1);
 
     const result: Array<{ epoch: number; open: number; high: number; low: number; close: number; volume: number }> = [];
@@ -161,7 +185,6 @@ export class DerivClient {
         prevClose = close;
         result.push({ epoch: s, open, high, low, close, volume: arr.length });
       } else {
-        // No ticks in this second: synthesize flat candle using prevClose
         const price = prevClose ?? (ticks.length ? ticks[0].price : 0);
         result.push({ epoch: s, open: price, high: price, low: price, close: price, volume: 0 });
       }
@@ -170,9 +193,9 @@ export class DerivClient {
     return result;
   }
 
-  // Buy rise/fall
+  // Buy rise/fall (object or positional signature)
   async buyRiseFall(
-    symbolOrOpts:
+    optsOrSymbol:
       | {
           symbol: string;
           side: "CALL" | "PUT";
@@ -185,18 +208,18 @@ export class DerivClient {
     stake?: number,
     duration?: number,
     duration_unit?: "m" | "h" | "d" | "t",
-    side?: "CALL" | "PUT",
+    contractType?: "CALL" | "PUT",
   ) {
-    const isObj = typeof symbolOrOpts === "object";
-    const symbol = isObj ? (symbolOrOpts as any).symbol : String(symbolOrOpts);
-    const amt = isObj ? Number((symbolOrOpts as any).stake) : Number(stake);
-    const dur = isObj ? Number((symbolOrOpts as any).duration) : Number(duration);
-    const unit = (isObj ? (symbolOrOpts as any).duration_unit : duration_unit)!;
-    const contractType = (isObj ? (symbolOrOpts as any).side : side)!;
-    const currency = (isObj ? (symbolOrOpts as any).currency : undefined) ?? "USD";
+    const isObj = typeof optsOrSymbol === "object";
+    const symbol = isObj ? (optsOrSymbol as any).symbol : String(optsOrSymbol);
+    const side = isObj ? (optsOrSymbol as any).side : contractType!;
+    const amt = isObj ? Number((optsOrSymbol as any).stake) : Number(stake);
+    const dur = isObj ? Number((optsOrSymbol as any).duration) : Number(duration);
+    const unit = (isObj ? (optsOrSymbol as any).duration_unit : duration_unit)!;
+    const currency = (isObj ? (optsOrSymbol as any).currency : undefined) ?? "USD";
 
     if (!symbol) throw new Error("buyRiseFall: symbol required");
-    if (!contractType) throw new Error("buyRiseFall: side required");
+    if (!side) throw new Error("buyRiseFall: side required");
     if (!Number.isFinite(amt) || amt <= 0) throw new Error("buyRiseFall: stake invalid");
     if (!Number.isFinite(dur) || dur <= 0) throw new Error("buyRiseFall: duration invalid");
     if (!unit) throw new Error("buyRiseFall: duration_unit required");
@@ -205,7 +228,7 @@ export class DerivClient {
       proposal: 1,
       amount: amt,
       basis: "stake",
-      contract_type: contractType,
+      contract_type: side,
       currency,
       duration: dur,
       duration_unit: unit,
