@@ -4,6 +4,7 @@ import { useStartBot, useStopBot, useBotStatus } from "@/hooks/use-bots";
 import { useSubscription } from "@/hooks/use-subscription";
 import { useToast } from "@/hooks/use-toast";
 import { api } from "@shared/routes";
+import { STRATEGY_SETTINGS, EXECUTION_FIELDS, getStrategyDefaults } from "@shared/strategySettings";
 import { useRuntimeEvents } from "@/context/runtime-events";
 import { apiFetch } from "@/lib/api";
 
@@ -21,16 +22,13 @@ export default function BotCenter() {
   const [accountId, setAccountId] = useState<string>("");
   const [symbol, setSymbol] = useState("R_100");
   const [timeframe, setTimeframe] = useState("1m");
-  const [strategyId, setStrategyId] = useState("RSI");
+  const [strategyId, setStrategyId] = useState<string>("");
   const [mode, setMode] = useState<"backtest" | "paper" | "live">("paper");
   const [params, setParams] = useState({
-    stake: 250,
-    rsiPeriod: 8,
-    overbought: 70,
-    oversold: 30,
-    duration: 5,
-    duration_unit: "m" as "m" | "h" | "d",
-  });
+     stake: 250,
+     duration: 5,
+     duration_unit: "m" as "m" | "h" | "d",
+   });
   const [showSettings, setShowSettings] = useState(false);
 
   // default account
@@ -49,33 +47,34 @@ export default function BotCenter() {
     });
   }, [timeframe]);
 
-  // strategy defaults when switching strategies (prevents RSI params persisting everywhere)
+  // merge defaults for selected strategy; clear fields from previous strategy
   useEffect(() => {
     setParams((p) => {
-      const base = { stake: p.stake ?? 250, duration: p.duration ?? 5, duration_unit: p.duration_unit ?? (timeframe === "1s" ? "t" : "m") } as any;
-      if (strategyId.toLowerCase().includes("rsi")) {
-        return { ...base, rsiPeriod: p.rsiPeriod ?? 8, overbought: p.overbought ?? 70, oversold: p.oversold ?? 30 };
-      }
-      // Non‑RSI strategies: drop RSI‑specific fields so UI doesn’t show stale data
-      const { rsiPeriod, overbought, oversold, ...rest } = p;
-      return { ...base, ...rest };
+      const exec = { stake: p.stake ?? 250, duration: p.duration ?? 5, duration_unit: p.duration_unit ?? (timeframe === "1s" ? "t" : "m") } as any;
+      if (!strategyId) return exec;
+      const defaults = getStrategyDefaults(strategyId);
+      // drop previous strategy keys not in current strategy
+      const allowedKeys = new Set(Object.keys(defaults).concat(EXECUTION_FIELDS.map((f) => f.key)));
+      const next: Record<string, any> = {};
+      for (const k of Object.keys(p)) if (allowedKeys.has(k)) next[k] = (p as any)[k];
+      return { ...defaults, ...exec, ...next };
     });
   }, [strategyId, timeframe]);
 
   // load saved settings for this combo
-  useEffect(() => {
-    (async () => {
-      if (!accountId) return;
-      try {
-        const path = api.strategies.settingsForAccount.path.replace(":accountId", accountId);
-        const r = await apiFetch(path);
-         const list = (await r.json()) as any[];
-         const found = list.find((s) => s.symbol === symbol && s.timeframe === timeframe && s.strategy_id === strategyId);
-         if (found?.params) setParams((p) => ({ ...p, ...found.params }));
-       } catch {
-         /* ignore */
-       }
-     })();
+   useEffect(() => {
+     (async () => {
+      if (!accountId || !strategyId) return;
+       try {
+         const path = api.strategies.settingsForAccount.path.replace(":accountId", accountId);
+         const r = await apiFetch(path);
+          const list = (await r.json()) as any[];
+          const found = list.find((s) => s.symbol === symbol && s.timeframe === timeframe && s.strategy_id === strategyId);
+          if (found?.params) setParams((p) => ({ ...p, ...found.params }));
+        } catch {
+          /* ignore */
+        }
+      })();
    }, [accountId, symbol, timeframe, strategyId]);
  
    const persistSettings = async (next = params) => {
@@ -188,17 +187,22 @@ export default function BotCenter() {
           </div>
 
           <div className="rounded-xl border border-border bg-background p-3">
-            <div className="text-sm text-muted-foreground mb-2">RSI Settings</div>
-            <div className="flex flex-wrap items-center gap-x-6 gap-y-2 font-mono">
-              {strategyId.toLowerCase().includes("rsi") && (
-                <>
-                  <div>Period: <span className="text-foreground">{params.rsiPeriod}</span></div>
-                  <div>OB: <span className="text-rose-400">{params.overbought}</span></div>
-                  <div>OS: <span className="text-emerald-400">{params.oversold}</span></div>
-                </>
-              )}
-              <div>Expiry: <span className="text-foreground">{params.duration}{params.duration_unit}</span></div>
-            </div>
+            <div className="text-sm text-muted-foreground mb-2">Settings</div>
+            {!strategyId ? (
+              <div className="text-xs text-muted-foreground">Select a strategy to configure.</div>
+            ) : (
+              <div className="flex flex-wrap items-center gap-x-6 gap-y-2 font-mono">
+                {Object.entries(params)
+                  .filter(([k]) => !["stake", "duration", "duration_unit"].includes(k))
+                  .slice(0, 5)
+                  .map(([k, v]) => (
+                    <div key={k}>
+                      {k}: <span className="text-foreground">{String(v)}</span>
+                    </div>
+                  ))}
+                <div>Expiry: <span className="text-foreground">{params.duration}{params.duration_unit}</span></div>
+              </div>
+            )}
           </div>
 
           <div className="grid grid-cols-3 gap-2">
@@ -225,6 +229,7 @@ export default function BotCenter() {
           <div>
             <label className="block text-sm">Strategy</label>
             <select className="w-full rounded-lg border border-border bg-background px-3 py-2" value={strategyId} onChange={(e) => setStrategyId(e.target.value)}>
+              <option value="">Select a strategy…</option>
               {["candle_pattern", "one_hour_trend", "trend_confirmation", "scalping_hwr", "trend_pullback", "supply_demand_sweep", "fvg_retracement", "range_mean_reversion"].map((s) => (
                 <option key={s} value={s}>{s}</option>
               ))}
@@ -232,7 +237,7 @@ export default function BotCenter() {
           </div>
 
           <div className="flex items-center gap-2">
-            <button onClick={start} disabled={!isPro && (mode === "paper" || mode === "live")} className={`rounded-lg px-3 py-2 font-semibold ${!isPro && (mode === "paper" || mode === "live") ? "border border-border bg-muted text-muted-foreground cursor-not-allowed" : "bg-ysbPurple text-ysbYellow hover:opacity-90"}`}>
+            <button onClick={start} disabled={!strategyId || (!isPro && (mode === "paper" || mode === "live"))} className={`rounded-lg px-3 py-2 font-semibold ${(!strategyId || (!isPro && (mode === "paper" || mode === "live"))) ? "border border-border bg-muted text-muted-foreground cursor-not-allowed" : "bg-ysbPurple text-ysbYellow hover:opacity-90"}`}>
               {status?.state === "running" ? "RESTART" : "START"}
             </button>
             <button onClick={stop} className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground">Stop</button>
@@ -242,7 +247,7 @@ export default function BotCenter() {
                 <option value="paper" disabled={!isPro}>Paper{!isPro ? " (Pro only)" : ""}</option>
                 <option value="live" disabled={!isPro}>Live{!isPro ? " (Pro only)" : ""}</option>
               </select>
-              <button type="button" onClick={() => setShowSettings(true)} className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted" title="Strategy settings">
+              <button type="button" onClick={() => strategyId && setShowSettings(true)} className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted" title="Strategy settings" disabled={!strategyId}>
                 ⚙️
               </button>
             </div>
@@ -271,12 +276,12 @@ export default function BotCenter() {
       {showSettings && (
         <StrategySettingsModal
           params={params}
-          isRSI={strategyId.toLowerCase().includes("rsi")}
-          onClose={() => setShowSettings(false)}
-          onSave={async (next) => {
-            setParams(next);
-            await persistSettings(next);
-            setShowSettings(false);
+          fields={(STRATEGY_SETTINGS[strategyId] ?? []).filter(f => f.category !== "execution")}
+           onClose={() => setShowSettings(false)}
+           onSave={async (next) => {
+             setParams(next);
+             await persistSettings(next);
+             setShowSettings(false);
 
             // If bot is running, restart it with updated config so BotManager uses new params
             try {
@@ -307,76 +312,87 @@ export default function BotCenter() {
   );
 }
 
-function StrategySettingsModal({ params, onSave, onClose, isRSI }: {
-  params: { stake: number; rsiPeriod?: number; overbought?: number; oversold?: number; duration: number; duration_unit: "m"|"h"|"d"|"t" };
-  isRSI: boolean;
-  onSave: (p: any) => void;
-  onClose: () => void;
-}) {
-  const [form, setForm] = useState(params);
-  return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4">
-      <div className="w-full max-w-lg rounded-2xl border border-border bg-card p-5">
-        <div className="text-xl font-semibold mb-1">Strategy Configuration</div>
-        <div className="text-sm text-muted-foreground mb-4">Adjust the parameters.</div>
+function StrategySettingsModal({ params, onSave, onClose, fields }: {
+  params: { stake: number; duration: number; duration_unit: "m"|"h"|"d"|"t"; [k: string]: any };
+  fields: { key: string; label: string; type: "number"|"select"|"boolean"|"text"; min?: number; max?: number; step?: number; options?: string[] }[];
+   onSave: (p: any) => void;
+   onClose: () => void;
+ }) {
+   const [form, setForm] = useState(params);
+   return (
+     <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4">
+       <div className="w-full max-w-lg rounded-2xl border border-border bg-card p-5">
+         <div className="text-xl font-semibold mb-1">Strategy Configuration</div>
+         <div className="text-sm text-muted-foreground mb-4">Adjust the parameters.</div>
 
-        <div className="space-y-3">
-          <div>
-            <label className="block text-sm mb-1">Stake ($)</label>
-            <input type="number" className="w-full rounded-lg border border-border bg-background px-3 py-2"
-              value={form.stake} onChange={(e) => setForm({ ...form, stake: Number(e.target.value) })}/>
-          </div>
+         <div className="space-y-3">
+           <div>
+             <label className="block text-sm mb-1">Stake ($)</label>
+             <input type="number" className="w-full rounded-lg border border-border bg-background px-3 py-2"
+               value={form.stake} onChange={(e) => setForm({ ...form, stake: Number(e.target.value) })}/>
+           </div>
 
-          <div className="grid gap-3 md:grid-cols-3">
-            {isRSI && (
-              <>
-                <div>
-                  <label className="block text-sm mb-1">RSI Period</label>
-                  <input type="number" className="w-full rounded-lg border border-border bg-background px-3 py-2"
-                    value={form.rsiPeriod ?? 8} onChange={(e) => setForm({ ...form, rsiPeriod: Number(e.target.value) })}/>
-                </div>
-                <div>
-                  <label className="block text-sm mb-1">Overbought</label>
-                  <input type="number" className="w-full rounded-lg border border-border bg-background px-3 py-2"
-                    value={form.overbought ?? 70} onChange={(e) => setForm({ ...form, overbought: Number(e.target.value) })}/>
-                </div>
-                <div>
-                  <label className="block text-sm mb-1">Oversold</label>
-                  <input type="number" className="w-full rounded-lg border border-border bg-background px-3 py-2"
-                    value={form.oversold ?? 30} onChange={(e) => setForm({ ...form, oversold: Number(e.target.value) })}/>
-                </div>
-              </>
-            )}
-          </div>
+           {!!fields.length && (
+             <div className="grid gap-3 md:grid-cols-2">
+               {fields.map((f) => (
+                 <div key={f.key}>
+                   <label className="block text-sm mb-1">{f.label}</label>
+                   {f.type === "number" && (
+                     <input type="number" className="w-full rounded-lg border border-border bg-background px-3 py-2"
+                       min={f.min} max={f.max} step={f.step}
+                       value={Number(form[f.key] ?? f.default ?? 0)}
+                       onChange={(e) => setForm({ ...form, [f.key]: Number(e.target.value) })}/>
+                   )}
+                   {f.type === "select" && (
+                     <select className="w-full rounded-lg border border-border bg-background px-3 py-2"
+                       value={String(form[f.key] ?? f.default ?? "")}
+                       onChange={(e) => setForm({ ...form, [f.key]: e.target.value })}>
+                       {(f.options ?? []).map((o) => <option key={o} value={o}>{o}</option>)}
+                     </select>
+                   )}
+                   {f.type === "boolean" && (
+                     <input type="checkbox"
+                       checked={Boolean(form[f.key] ?? f.default ?? false)}
+                       onChange={(e) => setForm({ ...form, [f.key]: e.target.checked })}/>
+                   )}
+                   {f.type === "text" && (
+                     <input type="text" className="w-full rounded-lg border border-border bg-background px-3 py-2"
+                       value={String(form[f.key] ?? f.default ?? "")}
+                       onChange={(e) => setForm({ ...form, [f.key]: e.target.value })}/>
+                   )}
+                 </div>
+               ))}
+             </div>
+           )}
 
-          <div className="grid gap-3 md:grid-cols-2">
-            <div>
-              <label className="block text-sm mb-1">{form.duration_unit === "t" ? "Tick Count" : "Expiry Duration"}</label>
-              <input type="number" min={form.duration_unit === "t" ? 1 : 1} className="w-full rounded-lg border border-border bg-background px-3 py-2"
-                value={form.duration} onChange={(e) => setForm({ ...form, duration: Number(e.target.value) })}/>
-            </div>
-            <div>
-              <label className="block text-sm mb-1">Unit</label>
-              <select className="w-full rounded-lg border border-border bg-background px-3 py-2"
-                value={form.duration_unit} onChange={(e) => setForm({ ...form, duration_unit: e.target.value as any })}>
-                <option value="t">Ticks</option>
-                <option value="m">Minutes</option>
-                <option value="h">Hours</option>
-                <option value="d">Days</option>
-              </select>
-            </div>
-          </div>
-        </div>
+           <div className="grid gap-3 md:grid-cols-2">
+             <div>
+               <label className="block text-sm mb-1">{form.duration_unit === "t" ? "Tick Count" : "Expiry Duration"}</label>
+               <input type="number" min={form.duration_unit === "t" ? 1 : 1} className="w-full rounded-lg border border-border bg-background px-3 py-2"
+                 value={form.duration} onChange={(e) => setForm({ ...form, duration: Number(e.target.value) })}/>
+             </div>
+             <div>
+               <label className="block text-sm mb-1">Unit</label>
+               <select className="w-full rounded-lg border border-border bg-background px-3 py-2"
+                 value={form.duration_unit} onChange={(e) => setForm({ ...form, duration_unit: e.target.value as any })}>
+                 <option value="t">Ticks</option>
+                 <option value="m">Minutes</option>
+                 <option value="h">Hours</option>
+                 <option value="d">Days</option>
+               </select>
+             </div>
+           </div>
+         </div>
 
-        <div className="mt-5 flex items-center justify-end gap-2">
-          <button className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground" onClick={onClose}>
-            Cancel
-          </button>
-          <button className="rounded-lg bg-ysbPurple px-3 py-2 font-semibold text-ysbYellow hover:opacity-90" onClick={() => onSave(form)}>
-            Save Changes
-          </button>
-        </div>
-      </div>
-    </div>
-  );
+         <div className="mt-5 flex items-center justify-end gap-2">
+           <button className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground" onClick={onClose}>
+             Cancel
+           </button>
+           <button className="rounded-lg bg-ysbPurple px-3 py-2 font-semibold text-ysbYellow hover:opacity-90" onClick={() => onSave(form)}>
+             Save Changes
+           </button>
+         </div>
+       </div>
+     </div>
+   );
 }

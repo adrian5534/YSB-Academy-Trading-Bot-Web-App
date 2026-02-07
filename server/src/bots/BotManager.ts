@@ -323,7 +323,17 @@ export class BotManager {
       this.hub.log("live mode requested (minimal implementation)", { symbol: cfg.symbol });
       try {
         const contractType = signal.side === "buy" ? "CALL" : "PUT";
-        const res = await deriv.buyRiseFall(cfg.symbol, stake, 5, "m", contractType);
+        const stakeParam = Number(cfg.params?.stake ?? stake);
+        const dur = Number(cfg.params?.duration ?? 5);
+        const durUnit = (cfg.params?.duration_unit ?? "m") as "m" | "h" | "d" | "t";
+        const res = await deriv.buyRiseFall({
+          symbol: cfg.symbol,
+          side: contractType,
+          stake: stakeParam,
+          duration: dur,
+          duration_unit: durUnit,
+          currency: "USD",
+        });
         this.hub.trade({ mode: "live", symbol: cfg.symbol, res });
       } catch (e) {
         this.hub.log("live buy error", { error: String(e) });
