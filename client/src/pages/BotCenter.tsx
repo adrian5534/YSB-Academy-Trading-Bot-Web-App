@@ -7,6 +7,7 @@ import { api } from "@shared/routes";
 import { STRATEGY_SETTINGS, EXECUTION_FIELDS, getStrategyDefaults } from "@shared/strategySettings";
 import { useRuntimeEvents } from "@/context/runtime-events";
 import { apiFetch } from "@/lib/api";
+import { useKeepAlive } from "@/hooks/use-keep-alive";
 
 export default function BotCenter() {
   const { toast } = useToast();
@@ -30,6 +31,9 @@ export default function BotCenter() {
      duration_unit: "m" as "m" | "h" | "d",
    });
   const [showSettings, setShowSettings] = useState(false);
+
+  // Keep server awake while this page is open (poll /api/health every 4 minutes)
+  useKeepAlive(true, 240_000);
 
   // default account
   useEffect(() => {
