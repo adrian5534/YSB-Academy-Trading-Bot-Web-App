@@ -34,10 +34,6 @@ export default function BotCenter() {
   });
   const [showSettings, setShowSettings] = usePersistedState<boolean>("bot:showSettings", false);
 
-  // multiple independent bots (each rendered as its own card)
-  const [bots, setBots] = usePersistedState<any[]>("bot:configs", []);
-  const [editingBotId, setEditingBotId] = reactUseState<string | null>(null);
-
   // Keep server awake while this page is open (poll /api/health every 4 minutes)
   useKeepAlive(true, 240_000);
 
@@ -45,64 +41,6 @@ export default function BotCenter() {
   useEffect(() => {
     if (!accountId && availableAccounts.length) setAccountId(availableAccounts[0].id);
   }, [availableAccounts, accountId]);
-
-  const makeId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-
-  const addBot = () => {
-    const b = {
-      id: makeId(),
-      account_id: accountId || (availableAccounts[0]?.id ?? ""),
-      symbol,
-      timeframe,
-      strategy_id: strategyId || "",
-      mode,
-      params: { ...params },
-      enabled: true,
-    };
-    setBots((s) => [...s, b]);
-    toast({ title: "Bot added", description: `${b.symbol} · ${b.strategy_id || "no-strategy"}` });
-  };
-
-  const updateBot = (id: string, patch: Partial<any>) => setBots((s) => s.map((b) => (b.id === id ? { ...b, ...patch } : b)));
-  const removeBot = (id: string) => setBots((s) => s.filter((b) => b.id !== id));
-
-  const startSingle = async (b: any) => {
-    try {
-      if (!b.strategy_id) {
-        toast({ title: "Missing strategy", description: "Select a strategy for this bot", variant: "destructive" });
-        return;
-      }
-      await apiFetch(api.strategies.setSettings.path, {
-        method: "POST",
-        body: JSON.stringify({
-          account_id: b.account_id,
-          symbol: b.symbol,
-          timeframe: b.timeframe,
-          strategy_id: b.strategy_id,
-          params: b.params,
-          enabled: true,
-        }),
-      }).catch(() => void 0);
-
-      await startBot.mutateAsync({
-        name: "YSB Bot",
-        configs: [
-          {
-            account_id: b.account_id,
-            symbol: b.symbol,
-            timeframe: b.timeframe,
-            strategy_id: b.strategy_id,
-            mode: b.mode,
-            params: b.params,
-            enabled: true,
-          },
-        ],
-      });
-      toast({ title: "Bot started", description: `${b.symbol} · ${b.strategy_id}` });
-    } catch (e: any) {
-      toast({ title: "Start failed", description: String(e?.message ?? e), variant: "destructive" });
-    }
-  };
 
   // set duration unit when timeframe changes (1s => ticks)
   useEffect(() => {
@@ -343,41 +281,39 @@ export default function BotCenter() {
 
       {showSettings && (
         <StrategySettingsModal
-          params={editingBotId ? (bots.find(b=>b.id===editingBotId)?.params ?? params) : params}
-          fields={(STRATEGY_SETTINGS[(editingBotId ? (bots.find(b=>b.id===editingBotId)?.strategy_id) : strategyId) ?? ""] ?? []).filter(f => f.category !== "execution")}
-          onClose={() => { setShowSettings(false); setEditingBotId(null); }}
-          onSave={async (next) => {
-            if (editingBotId) {
-              const b = bots.find(x=>x.id===editingBotId);
-              if (b) {
-                updateBot(editingBotId, { params: next });
-                // persist bot settings server-side
-                await apiFetch(api.strategies.setSettings.path, {
-                  method: "POST",
-                  body: JSON.stringify({
-                    account_id: b.account_id,
-                    symbol: b.symbol,
-                    timeframe: b.timeframe,
-                    strategy_id: b.strategy_id,
-                    params: next,
-                    enabled: true,
-                  }),
-                }).catch(() => void 0);
-              }
-            } else {
-              setParams(next);
-              await persistSettings(next);
-            }
-            setShowSettings(false);
-            setEditingBotId(null);
-          }}
-        />
-      )}
+          params={params}
+          fields={(STRATEGY_SETTINGS[strategyId] ?? []).filter(f => f.category !== "execution")}
+           onClose={() => setShowSettings(false)}
+           onSave={async (next) => {
+             setParams(next);
+             await persistSettings(next);
+             setShowSettings(false);
 
-      {/* fixed floating big + button (side) */}
-      <div className="fixed right-6 bottom-20 z-50">
-        <button onClick={addBot} title="Add bot" className="w-14 h-14 rounded-full bg-ysbPurple text-ysbYellow text-3xl shadow-lg">+</button>
-      </div>
+            // If bot is running, restart it with updated config so BotManager uses new params
+            try {
+              if (status?.state === "running") {
+                await startBot.mutateAsync({
+                  name: "YSB Bot",
+                  configs: [
+                    {
+                      account_id: accountId,
+                      symbol,
+                      timeframe,
+                      strategy_id: strategyId,
+                      mode,
+                      params: next,
+                      enabled: true,
+                    },
+                  ],
+                });
+                toast({ title: "Bot restarted", description: "Applied new settings to running bot." });
+              }
+            } catch (e: any) {
+              toast({ title: "Restart failed", description: String(e?.message ?? e), variant: "destructive" });
+            }
+          }}
+         />
+      )}
     </div>
   );
 }
@@ -465,8 +401,7 @@ function StrategySettingsModal({ params, onSave, onClose, fields }: {
        </div>
      </div>
    );
- }
- 
- function useState(params: { [k: string]: any; stake: number; duration: number; duration_unit: "m" | "h" | "d" | "t"; }): [any, any] {
-   return reactUseState(params);
- }
+}
+function useState(params: { [k: string]: any; stake: number; duration: number; duration_unit: "m" | "h" | "d" | "t"; }): [any, any] {
+  return reactUseState(params);
+}
