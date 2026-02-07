@@ -34,7 +34,7 @@ export default function BotCenter() {
   });
   const [showSettings, setShowSettings] = usePersistedState<boolean>("bot:showSettings", false);
 
-  // multiple independent bots (each rendered as its own card)
+  // multiple bots (each its own identical card)
   const [bots, setBots] = usePersistedState<any[]>("bot:configs", []);
   const [editingBotId, setEditingBotId] = reactUseState<string | null>(null);
 
@@ -45,6 +45,14 @@ export default function BotCenter() {
   useEffect(() => {
     if (!accountId && availableAccounts.length) setAccountId(availableAccounts[0].id);
   }, [availableAccounts, accountId]);
+
+  // helper to compute execution unit from timeframe
+  const computeExecUnit = (tf: string): "t" | "m" | "h" | "d" => {
+    if (tf === "1s") return "t";
+    if (tf.endsWith("m")) return "m";
+    if (tf.endsWith("h")) return "h";
+    return "d";
+  };
 
   const makeId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 
@@ -63,13 +71,85 @@ export default function BotCenter() {
     toast({ title: "Bot added", description: `${b.symbol} · ${b.strategy_id || "no-strategy"}` });
   };
 
-  const updateBot = (id: string, patch: Partial<any>) => setBots((s) => s.map((b) => (b.id === id ? { ...b, ...patch } : b)));
+  const updateBot = (id: string, patch: Partial<any>) =>
+    setBots((s) =>
+      s.map((b) => {
+        if (b.id !== id) return b;
+        // keep execution unit aligned when timeframe changes
+        if (patch.timeframe && patch.timeframe !== b.timeframe) {
+          const du = computeExecUnit(patch.timeframe);
+          return {
+            ...b,
+            ...patch,
+            params: { ...(b.params || {}), duration_unit: du, duration: Math.max(1, Number(b.params?.duration ?? 5)) },
+          };
+        }
+        // merge defaults when strategy changes (preserve execution fields)
+        if (patch.strategy_id && patch.strategy_id !== b.strategy_id) {
+          const defaults = getStrategyDefaults(patch.strategy_id);
+          const execKeys = new Set(["stake", "duration", "duration_unit"]);
+          const exec = {
+            stake: Number(b.params?.stake ?? 250),
+            duration: Number(b.params?.duration ?? 5),
+            duration_unit: (b.params?.duration_unit as any) ?? computeExecUnit(b.timeframe),
+          };
+          const nextParams: Record<string, any> = {
+            ...defaults,
+            ...Object.fromEntries(Object.entries(b.params || {}).filter(([k]) => execKeys.has(k))),
+            ...exec,
+          };
+          return { ...b, ...patch, params: nextParams };
+        }
+        return { ...b, ...patch };
+      })
+    );
+
   const removeBot = (id: string) => setBots((s) => s.filter((b) => b.id !== id));
+
+  const start = async () => {
+    try {
+      if (!isPro && (mode === "paper" || mode === "live")) {
+        toast({ title: "Upgrade required", description: "Paper/Live trading requires Pro plan.", variant: "destructive" });
+        return;
+      }
+      await persistSettings();
+      await startBot.mutateAsync({
+        name: "YSB Bot",
+        configs: [
+          {
+            account_id: accountId,
+            symbol,
+            timeframe,
+            strategy_id: strategyId,
+            mode,
+            params,
+            enabled: true,
+          },
+        ],
+      });
+      toast({ title: "Bot started", description: "Streaming logs via WebSocket." });
+    } catch (e: any) {
+      toast({ title: "Start failed", description: String(e.message ?? e), variant: "destructive" });
+    }
+  };
+
+  const stop = async () => {
+    try {
+      await stopBot.mutateAsync();
+      toast({ title: "Bot stopped" });
+    } catch (e: any) {
+      toast({ title: "Stop failed", description: String(e.message ?? e), variant: "destructive" });
+    }
+  };
 
   const startSingle = async (b: any) => {
     try {
-      if (!b.strategy_id) {
-        toast({ title: "Missing strategy", description: "Select a strategy for this bot", variant: "destructive" });
+      if (!isPro && (b.mode === "paper" || b.mode === "live")) {
+        toast({ title: "Upgrade required", description: "Paper/Live trading requires Pro plan.", variant: "destructive" });
+        return;
+      }
+      if (!b.strategy_id || !b.account_id) {
+        toast({ title: "Missing fields", description: "Select account and strategy.", variant: "destructive" });
         return;
       }
       await apiFetch(api.strategies.setSettings.path, {
@@ -104,7 +184,7 @@ export default function BotCenter() {
     }
   };
 
-  // set duration unit when timeframe changes (1s => ticks)
+  // set duration unit when timeframe changes (1s => ticks) for primary
   useEffect(() => {
     setParams((p) => {
       if (timeframe === "1s") return { ...p, duration_unit: "t" as const, duration: Math.max(1, p.duration || 5) };
@@ -115,13 +195,12 @@ export default function BotCenter() {
     });
   }, [timeframe]);
 
-  // merge defaults for selected strategy; clear fields from previous strategy
+  // merge defaults for selected strategy; clear fields from previous strategy (primary)
   useEffect(() => {
     setParams((p) => {
       const exec = { stake: p.stake ?? 250, duration: p.duration ?? 5, duration_unit: p.duration_unit ?? (timeframe === "1s" ? "t" : "m") } as any;
       if (!strategyId) return exec;
       const defaults = getStrategyDefaults(strategyId);
-      // drop previous strategy keys not in current strategy
       const allowedKeys = new Set(Object.keys(defaults).concat(EXECUTION_FIELDS.map((f) => f.key)));
       const next: Record<string, any> = {};
       for (const k of Object.keys(p)) if (allowedKeys.has(k)) next[k] = (p as any)[k];
@@ -129,7 +208,7 @@ export default function BotCenter() {
     });
   }, [strategyId, timeframe]);
 
-  // load saved settings for this combo
+  // load saved settings for primary combo
   useEffect(() => {
     (async () => {
       if (!accountId || !strategyId) return;
@@ -166,57 +245,6 @@ export default function BotCenter() {
 
   const isPro = sub?.plan === "pro";
 
-  const start = async () => {
-    try {
-      if (!isPro && (mode === "paper" || mode === "live")) {
-        toast({ title: "Upgrade required", description: "Paper/Live trading requires Pro plan.", variant: "destructive" });
-        return;
-      }
-      // persist then start
-      await persistSettings();
-      await startBot.mutateAsync({
-        name: "YSB Bot",
-        configs: [
-          {
-            account_id: accountId,
-            symbol,
-            timeframe,
-            strategy_id: strategyId,
-            mode,
-            params, // includes stake + duration
-            enabled: true,
-          },
-        ],
-      });
-      toast({ title: "Bot started", description: "Streaming logs via WebSocket." });
-    } catch (e: any) {
-      toast({ title: "Start failed", description: String(e.message ?? e), variant: "destructive" });
-    }
-  };
-
-  const stop = async () => {
-    try {
-      await stopBot.mutateAsync();
-      toast({ title: "Bot stopped" });
-    } catch (e: any) {
-      toast({ title: "Stop failed", description: String(e.message ?? e), variant: "destructive" });
-    }
-  };
-
-  const upgradeToPro = async () => {
-    try {
-      const res = await apiFetch(api.stripe.createCheckout.path, {
-        method: "POST",
-        body: JSON.stringify({ return_url: window.location.href }),
-      });
-      const j = await res.json().catch(() => ({}));
-      if (j?.url) window.open(j.url, "_blank");
-      else throw new Error("No checkout URL returned");
-    } catch (e: any) {
-      toast({ title: "Checkout error", description: String(e?.message ?? e), variant: "destructive" });
-    }
-  };
-
   const manageBilling = async () => {
     try {
       const res = await apiFetch("/api/stripe/portal", {
@@ -242,146 +270,155 @@ export default function BotCenter() {
       <div className="text-sm text-muted-foreground">Manage strategy & execution</div>
 
       <div className="grid gap-4 lg:grid-cols-2">
-        {/* Left column: primary card + extra bot cards stacked */}
-        <div className="space-y-4">
-          {/* Primary bot card with side + button */}
-          <div className="relative">
-            <div className="rounded-2xl border border-border bg-card p-4 space-y-4">
-              <div className="grid gap-3 md:grid-cols-2">
-                <div className="rounded-xl border border-border bg-background p-3">
-                  <div className="text-sm text-muted-foreground">Strategy</div>
-                  <div className="mt-1 font-mono text-lg">{strategyId.toUpperCase()}</div>
-                </div>
-                <div className="rounded-xl border border-border bg-background p-3">
-                  <div className="text-sm text-muted-foreground">Stake</div>
-                  <div className="mt-1 font-mono text-lg">${params.stake}</div>
-                </div>
-              </div>
-
-              <div className="rounded-xl border border-border bg-background p-3">
-                <div className="text-sm text-muted-foreground mb-2">Settings</div>
-                {!strategyId ? (
-                  <div className="text-xs text-muted-foreground">Select a strategy to configure.</div>
-                ) : (
-                  <div className="flex flex-wrap items-center gap-x-6 gap-y-2 font-mono">
-                    {Object.entries(params)
-                      .filter(([k]) => !["stake", "duration", "duration_unit"].includes(k))
-                      .slice(0, 5)
-                      .map(([k, v]) => (
-                        <div key={k}>
-                          {k}: <span className="text-foreground">{String(v)}</span>
-                        </div>
-                      ))}
-                    <div>Expiry: <span className="text-foreground">{params.duration}{params.duration_unit}</span></div>
+        {/* Left: cards grid (primary + extra), arranged left-to-right */}
+        <div>
+          <div className="grid gap-4 sm:grid-cols-1 md:grid-cols-2">
+            {/* Primary card */}
+            <div className="relative">
+              <div className="rounded-2xl border border-border bg-card p-4 space-y-4">
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div className="rounded-xl border border-border bg-background p-3">
+                    <div className="text-sm text-muted-foreground">Strategy</div>
+                    <div className="mt-1 font-mono text-lg">{strategyId ? strategyId.toUpperCase() : "—"}</div>
                   </div>
-                )}
-              </div>
+                  <div className="rounded-xl border border-border bg-background p-3">
+                    <div className="text-sm text-muted-foreground">Stake</div>
+                    <div className="mt-1 font-mono text-lg">${params.stake}</div>
+                  </div>
+                </div>
 
-              <div className="grid grid-cols-3 gap-2">
+                <div className="rounded-xl border border-border bg-background p-3">
+                  <div className="text-sm text-muted-foreground mb-2">Settings</div>
+                  {!strategyId ? (
+                    <div className="text-xs text-muted-foreground">Select a strategy to configure.</div>
+                  ) : (
+                    <div className="flex flex-wrap items-center gap-x-6 gap-y-2 font-mono">
+                      {Object.entries(params)
+                        .filter(([k]) => !["stake", "duration", "duration_unit"].includes(k))
+                        .slice(0, 5)
+                        .map(([k, v]) => (
+                          <div key={k}>
+                            {k}: <span className="text-foreground">{String(v)}</span>
+                          </div>
+                        ))}
+                      <div>Expiry: <span className="text-foreground">{params.duration}{params.duration_unit}</span></div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-3 gap-2">
+                  <div>
+                    <label className="block text-sm">Account</label>
+                    <select className="w-full rounded-lg border border-border bg-background px-3 py-2" value={accountId} onChange={(e) => setAccountId(e.target.value)}>
+                      {availableAccounts.map((a: any) => (
+                        <option key={a.id} value={a.id}>{a.label} {a.type ? `(${a.type})` : ""}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm">Symbol</label>
+                    <input className="w-full rounded-lg border border-border bg-background px-3 py-2" value={symbol} onChange={(e) => setSymbol(e.target.value)} />
+                  </div>
+                  <div>
+                    <label className="block text-sm">Timeframe</label>
+                    <select className="w-full rounded-lg border border-border bg-background px-3 py-2" value={timeframe} onChange={(e) => setTimeframe(e.target.value)}>
+                      {["1s", "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "1d"].map((t) => <option key={t} value={t}>{t}</option>)}
+                    </select>
+                  </div>
+                </div>
+
                 <div>
-                  <label className="block text-sm">Account</label>
-                  <select className="w-full rounded-lg border border-border bg-background px-3 py-2" value={accountId} onChange={(e) => setAccountId(e.target.value)}>
-                    {availableAccounts.map((a: any) => (
-                      <option key={a.id} value={a.id}>{a.label} {a.type ? `(${a.type})` : ""}</option>
+                  <label className="block text-sm">Strategy</label>
+                  <select className="w-full rounded-lg border border-border bg-background px-3 py-2" value={strategyId} onChange={(e) => setStrategyId(e.target.value)}>
+                    <option value="">Select a strategy…</option>
+                    {["candle_pattern", "one_hour_trend", "trend_confirmation", "scalping_hwr", "trend_pullback", "supply_demand_sweep", "fvg_retracement", "range_mean_reversion"].map((s) => (
+                      <option key={s} value={s}>{s}</option>
                     ))}
                   </select>
                 </div>
-                <div>
-                  <label className="block text-sm">Symbol</label>
-                  <input className="w-full rounded-lg border border-border bg-background px-3 py-2" value={symbol} onChange={(e) => setSymbol(e.target.value)} />
-                </div>
-                <div>
-                  <label className="block text-sm">Timeframe</label>
-                  <select className="w-full rounded-lg border border-border bg-background px-3 py-2" value={timeframe} onChange={(e) => setTimeframe(e.target.value)}>
-                    {["1s", "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "1d"].map((t) => <option key={t} value={t}>{t}</option>)}
-                  </select>
-                </div>
-              </div>
 
-              <div>
-                <label className="block text-sm">Strategy</label>
-                <select className="w-full rounded-lg border border-border bg-background px-3 py-2" value={strategyId} onChange={(e) => setStrategyId(e.target.value)}>
-                  <option value="">Select a strategy…</option>
-                  {["candle_pattern", "one_hour_trend", "trend_confirmation", "scalping_hwr", "trend_pullback", "supply_demand_sweep", "fvg_retracement", "range_mean_reversion"].map((s) => (
-                    <option key={s} value={s}>{s}</option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <button onClick={start} disabled={!strategyId || (!isPro && (mode === "paper" || mode === "live"))} className={`rounded-lg px-3 py-2 font-semibold ${(!strategyId || (!isPro && (mode === "paper" || mode === "live"))) ? "border border-border bg-muted text-muted-foreground cursor-not-allowed" : "bg-ysbPurple text-ysbYellow hover:opacity-90"}`}>
-                  {status?.state === "running" ? "RESTART" : "START"}
-                </button>
-                <button onClick={stop} className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground">Stop</button>
-                <div className="ml-auto flex items-center gap-2">
-                  <select className="rounded-lg border border-border bg-background px-3 py-2 text-sm" value={mode} onChange={(e) => setMode(e.target.value as any)}>
-                    <option value="backtest">Backtest</option>
-                    <option value="paper" disabled={!isPro}>Paper{!isPro ? " (Pro only)" : ""}</option>
-                    <option value="live" disabled={!isPro}>Live{!isPro ? " (Pro only)" : ""}</option>
-                  </select>
-                  <button type="button" onClick={() => strategyId && setShowSettings(true)} className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted" title="Strategy settings" disabled={!strategyId}>
-                    ⚙️
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {/* Big + anchored to the right side of the primary card */}
-            <button
-              onClick={addBot}
-              title="Add bot"
-              className="absolute -right-6 top-1/2 -translate-y-1/2 z-10 flex h-14 w-14 items-center justify-center rounded-full bg-ysbPurple text-ysbYellow text-3xl shadow-xl"
-            >
-              +
-            </button>
-          </div>
-
-          {/* Extra bot cards */}
-          {bots.length === 0 ? (
-            <div className="rounded-2xl border border-border bg-card p-4 text-sm text-muted-foreground">
-              No additional bots yet. Use the + to add one.
-            </div>
-          ) : null}
-
-          {bots.map((b) => (
-            <div key={b.id} className="rounded-2xl border border-border bg-card p-4 space-y-3">
-              <div className="flex items-start justify-between">
-                <div>
-                  <div className="text-sm text-muted-foreground">Bot</div>
-                  <div className="font-semibold font-mono">{b.symbol} · {b.timeframe} · {b.strategy_id || "no-strategy"}</div>
-                </div>
                 <div className="flex items-center gap-2">
-                  <button onClick={() => startSingle(b)} className="rounded-lg bg-ysbPurple px-3 py-2 text-sm font-semibold text-ysbYellow hover:opacity-90" disabled={!b.account_id || !b.strategy_id || (!isPro && (b.mode === "paper" || b.mode === "live"))}>
-                    Start
+                  <button onClick={start} disabled={!strategyId || (!isPro && (mode === "paper" || mode === "live"))} className={`rounded-lg px-3 py-2 font-semibold ${(!strategyId || (!isPro && (mode === "paper" || mode === "live"))) ? "border border-border bg-muted text-muted-foreground cursor-not-allowed" : "bg-ysbPurple text-ysbYellow hover:opacity-90"}`}>
+                    {status?.state === "running" ? "RESTART" : "START"}
                   </button>
-                  <button onClick={() => removeBot(b.id)} className="rounded-lg border border-border px-3 py-2 text-sm text-rose-500">
-                    Remove
-                  </button>
+                  <button onClick={stop} className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground">Stop</button>
+                  <div className="ml-auto flex items-center gap-2">
+                    <select className="rounded-lg border border-border bg-background px-3 py-2 text-sm" value={mode} onChange={(e) => setMode(e.target.value as any)}>
+                      <option value="backtest">Backtest</option>
+                      <option value="paper" disabled={!isPro}>Paper{!isPro ? " (Pro only)" : ""}</option>
+                      <option value="live" disabled={!isPro}>Live{!isPro ? " (Pro only)" : ""}</option>
+                    </select>
+                    <button type="button" onClick={() => strategyId && setShowSettings(true)} className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted" title="Strategy settings" disabled={!strategyId}>
+                      ⚙️
+                    </button>
+                  </div>
                 </div>
               </div>
 
-              <div className="grid grid-cols-3 gap-2">
-                <div>
-                  <label className="block text-sm">Account</label>
-                  <select className="w-full rounded-lg border border-border bg-background px-3 py-2" value={b.account_id} onChange={(e) => updateBot(b.id, { account_id: e.target.value })}>
-                    {availableAccounts.map((a: any) => (
-                      <option key={a.id} value={a.id}>{a.label} {a.type ? `(${a.type})` : ""}</option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-sm">Symbol</label>
-                  <input className="w-full rounded-lg border border-border bg-background px-3 py-2" value={b.symbol} onChange={(e) => updateBot(b.id, { symbol: e.target.value })} />
-                </div>
-                <div>
-                  <label className="block text-sm">Timeframe</label>
-                  <select className="w-full rounded-lg border border-border bg-background px-3 py-2" value={b.timeframe} onChange={(e) => updateBot(b.id, { timeframe: e.target.value })}>
-                    {["1s", "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "1d"].map((t) => <option key={t} value={t}>{t}</option>)}
-                  </select>
-                </div>
-              </div>
+              {/* Big + anchored to the right side of the primary card */}
+              <button
+                onClick={addBot}
+                title="Add bot"
+                className="absolute -right-6 top-1/2 -translate-y-1/2 z-10 flex h-14 w-14 items-center justify-center rounded-full bg-ysbPurple text-ysbYellow text-3xl shadow-xl"
+              >
+                +
+              </button>
+            </div>
 
-              <div className="grid grid-cols-3 gap-2">
+            {/* Extra bot cards (identical layout) */}
+            {bots.map((b) => (
+              <div key={b.id} className="rounded-2xl border border-border bg-card p-4 space-y-4">
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div className="rounded-xl border border-border bg-background p-3">
+                    <div className="text-sm text-muted-foreground">Strategy</div>
+                    <div className="mt-1 font-mono text-lg">{b.strategy_id ? String(b.strategy_id).toUpperCase() : "—"}</div>
+                  </div>
+                  <div className="rounded-xl border border-border bg-background p-3">
+                    <div className="text-sm text-muted-foreground">Stake</div>
+                    <div className="mt-1 font-mono text-lg">${Number(b.params?.stake ?? 0)}</div>
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-border bg-background p-3">
+                  <div className="text-sm text-muted-foreground mb-2">Settings</div>
+                  {!b.strategy_id ? (
+                    <div className="text-xs text-muted-foreground">Select a strategy to configure.</div>
+                  ) : (
+                    <div className="flex flex-wrap items-center gap-x-6 gap-y-2 font-mono">
+                      {Object.entries(b.params || {})
+                        .filter(([k]) => !["stake", "duration", "duration_unit"].includes(k))
+                        .slice(0, 5)
+                        .map(([k, v]) => (
+                          <div key={k}>
+                            {k}: <span className="text-foreground">{String(v)}</span>
+                          </div>
+                        ))}
+                      <div>Expiry: <span className="text-foreground">{b.params?.duration}{b.params?.duration_unit}</span></div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-3 gap-2">
+                  <div>
+                    <label className="block text-sm">Account</label>
+                    <select className="w-full rounded-lg border border-border bg-background px-3 py-2" value={b.account_id} onChange={(e) => updateBot(b.id, { account_id: e.target.value })}>
+                      {availableAccounts.map((a: any) => (
+                        <option key={a.id} value={a.id}>{a.label} {a.type ? `(${a.type})` : ""}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm">Symbol</label>
+                    <input className="w-full rounded-lg border border-border bg-background px-3 py-2" value={b.symbol} onChange={(e) => updateBot(b.id, { symbol: e.target.value })} />
+                  </div>
+                  <div>
+                    <label className="block text-sm">Timeframe</label>
+                    <select className="w-full rounded-lg border border-border bg-background px-3 py-2" value={b.timeframe} onChange={(e) => updateBot(b.id, { timeframe: e.target.value })}>
+                      {["1s", "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "1d"].map((t) => <option key={t} value={t}>{t}</option>)}
+                    </select>
+                  </div>
+                </div>
+
                 <div>
                   <label className="block text-sm">Strategy</label>
                   <select className="w-full rounded-lg border border-border bg-background px-3 py-2" value={b.strategy_id} onChange={(e) => updateBot(b.id, { strategy_id: e.target.value })}>
@@ -391,54 +428,43 @@ export default function BotCenter() {
                     ))}
                   </select>
                 </div>
-                <div>
-                  <label className="block text-sm">Mode</label>
-                  <select className="w-full rounded-lg border border-border bg-background px-3 py-2" value={b.mode} onChange={(e) => updateBot(b.id, { mode: e.target.value as any })}>
-                    <option value="backtest">Backtest</option>
-                    <option value="paper" disabled={!isPro}>Paper{!isPro ? " (Pro only)" : ""}</option>
-                    <option value="live" disabled={!isPro}>Live{!isPro ? " (Pro only)" : ""}</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-sm">Stake</label>
-                  <input type="number" className="w-full rounded-lg border border-border bg-background px-3 py-2" value={Number(b.params?.stake ?? 0)} onChange={(e) => updateBot(b.id, { params: { ...(b.params || {}), stake: Number(e.target.value) } })} />
-                </div>
-              </div>
 
-              <div className="rounded-xl border border-border bg-background p-3">
-                <div className="text-sm text-muted-foreground mb-2">Settings</div>
-                {!b.strategy_id ? (
-                  <div className="text-xs text-muted-foreground">Select a strategy to configure.</div>
-                ) : (
-                  <div className="flex flex-wrap items-center gap-x-6 gap-y-2 font-mono">
-                    {Object.entries(b.params || {})
-                      .filter(([k]) => !["stake", "duration", "duration_unit"].includes(k))
-                      .slice(0, 5)
-                      .map(([k, v]) => (
-                        <div key={k}>
-                          {k}: <span className="text-foreground">{String(v)}</span>
-                        </div>
-                      ))}
-                    <div>Expiry: <span className="text-foreground">{b.params?.duration}{b.params?.duration_unit}</span></div>
-                  </div>
-                )}
-                <div className="mt-2">
+                <div className="flex items-center gap-2">
                   <button
-                    type="button"
-                    onClick={() => { setEditingBotId(b.id); setShowSettings(true); }}
-                    className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted"
-                    title="Strategy settings"
-                    disabled={!b.strategy_id}
+                    onClick={() => startSingle(b)}
+                    disabled={!b.strategy_id || !b.account_id || (!isPro && (b.mode === "paper" || b.mode === "live"))}
+                    className={`rounded-lg px-3 py-2 font-semibold ${(!b.strategy_id || !b.account_id || (!isPro && (b.mode === "paper" || b.mode === "live"))) ? "border border-border bg-muted text-muted-foreground cursor-not-allowed" : "bg-ysbPurple text-ysbYellow hover:opacity-90"}`}
                   >
-                    ⚙️ Edit
+                    {status?.state === "running" ? "RESTART" : "START"}
                   </button>
+                  <button onClick={stop} className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground">Stop</button>
+                  <div className="ml-auto flex items-center gap-2">
+                    <select
+                      className="rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                      value={b.mode}
+                      onChange={(e) => updateBot(b.id, { mode: e.target.value as any })}
+                    >
+                      <option value="backtest">Backtest</option>
+                      <option value="paper" disabled={!isPro}>Paper{!isPro ? " (Pro only)" : ""}</option>
+                      <option value="live" disabled={!isPro}>Live{!isPro ? " (Pro only)" : ""}</option>
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => b.strategy_id && (setEditingBotId(b.id), setShowSettings(true))}
+                      className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted"
+                      title="Strategy settings"
+                      disabled={!b.strategy_id}
+                    >
+                      ⚙️
+                    </button>
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
 
-        {/* Right column: Live logs */}
+        {/* Right: Live logs */}
         <div className="rounded-2xl border border-border bg-card p-4">
           <div className="flex items-center justify-between mb-2">
             <div className="font-semibold">Live logs</div>
@@ -468,7 +494,6 @@ export default function BotCenter() {
               const b = bots.find(x=>x.id===editingBotId);
               if (b) {
                 updateBot(editingBotId, { params: next });
-                // persist bot settings server-side
                 await apiFetch(api.strategies.setSettings.path, {
                   method: "POST",
                   body: JSON.stringify({
