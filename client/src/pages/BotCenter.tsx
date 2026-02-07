@@ -318,7 +318,7 @@ export default function BotCenter() {
 
 function StrategySettingsModal({ params, onSave, onClose, fields }: {
   params: { stake: number; duration: number; duration_unit: "m"|"h"|"d"|"t"; [k: string]: any };
-  fields: { key: string; label: string; type: "number"|"select"|"boolean"|"text"; min?: number; max?: number; step?: number; options?: string[] }[];
+  fields: { key: string; label: string; type: "number"|"select"|"boolean"|"text"; min?: number; max?: number; step?: number; options?: string[]; default?: string | number | boolean }[];
    onSave: (p: any) => void;
    onClose: () => void;
  }) {
