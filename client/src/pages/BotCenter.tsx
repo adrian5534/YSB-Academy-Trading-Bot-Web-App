@@ -34,6 +34,10 @@ export default function BotCenter() {
   });
   const [showSettings, setShowSettings] = usePersistedState<boolean>("bot:showSettings", false);
 
+  // persistent list of user-defined bot configs (each bot is independent)
+  const [bots, setBots] = usePersistedState<any[]>("bot:configs", []);
+  const [editingBotId, setEditingBotId] = reactUseState<string | null>(null);
+
   // Keep server awake while this page is open (poll /api/health every 4 minutes)
   useKeepAlive(true, 240_000);
 
@@ -41,6 +45,82 @@ export default function BotCenter() {
   useEffect(() => {
     if (!accountId && availableAccounts.length) setAccountId(availableAccounts[0].id);
   }, [availableAccounts, accountId]);
+
+  // helpers for bots list
+  const makeId = () => String(Date.now()) + Math.random().toString(36).slice(2, 8);
+
+  const addBotFromTemplate = () => {
+    if (!accountId || !strategyId) {
+      toast({ title: "Incomplete", description: "Select account and strategy before adding a bot.", variant: "destructive" });
+      return;
+    }
+    const b = {
+      id: makeId(),
+      account_id: accountId,
+      symbol,
+      timeframe,
+      strategy_id: strategyId,
+      mode,
+      params: { ...params },
+      enabled: true,
+    };
+    setBots((s) => [...s, b]);
+    toast({ title: "Bot added", description: `${b.symbol} / ${b.strategy_id}` });
+  };
+
+  const updateBot = (id: string, patch: Partial<any>) => setBots((s) => s.map((b) => (b.id === id ? { ...b, ...patch } : b)));
+  const removeBot = (id: string) => setBots((s) => s.filter((b) => b.id !== id));
+
+  const startSingle = async (botConfig: any) => {
+    try {
+      await persistSettings(botConfig.params);
+      await startBot.mutateAsync({
+        name: "YSB Bot",
+        configs: [
+          {
+            account_id: botConfig.account_id,
+            symbol: botConfig.symbol,
+            timeframe: botConfig.timeframe,
+            strategy_id: botConfig.strategy_id,
+            mode: botConfig.mode,
+            params: botConfig.params,
+            enabled: true,
+          },
+        ],
+      });
+      toast({ title: "Bot started", description: `${botConfig.symbol} / ${botConfig.strategy_id}` });
+    } catch (e: any) {
+      toast({ title: "Start failed", description: String(e?.message ?? e), variant: "destructive" });
+    }
+  };
+
+  const startAll = async () => {
+    try {
+      const valid = bots.filter((b) => b.account_id && b.strategy_id);
+      if (!valid.length) {
+        toast({ title: "No bots", description: "Add at least one complete bot (account + strategy).", variant: "destructive" });
+        return;
+      }
+      // persist each settings (best-effort)
+      await Promise.all(valid.map((c) =>
+        apiFetch(api.strategies.setSettings.path, {
+          method: "POST",
+          body: JSON.stringify({
+            account_id: c.account_id,
+            symbol: c.symbol,
+            timeframe: c.timeframe,
+            strategy_id: c.strategy_id,
+            params: c.params,
+            enabled: true,
+          }),
+        }).catch(() => void 0)
+      ));
+      await startBot.mutateAsync({ name: "YSB Bot", configs: valid });
+      toast({ title: "All bots started", description: `${valid.length} configs sent` });
+    } catch (e: any) {
+      toast({ title: "Start all failed", description: String(e?.message ?? e), variant: "destructive" });
+    }
+  };
 
   // set duration unit when timeframe changes (1s => ticks)
   useEffect(() => {
@@ -243,8 +323,9 @@ export default function BotCenter() {
           </div>
 
           <div className="flex items-center gap-2">
-            <button onClick={start} disabled={!strategyId || (!isPro && (mode === "paper" || mode === "live"))} className={`rounded-lg px-3 py-2 font-semibold ${(!strategyId || (!isPro && (mode === "paper" || mode === "live"))) ? "border border-border bg-muted text-muted-foreground cursor-not-allowed" : "bg-ysbPurple text-ysbYellow hover:opacity-90"}`}>
-              {status?.state === "running" ? "RESTART" : "START"}
+            <button onClick={() => addBotFromTemplate()} className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted">+ Add bot</button>
+            <button onClick={startAll} disabled={!bots.length} className="rounded-lg px-3 py-2 font-semibold bg-ysbPurple text-ysbYellow hover:opacity-90">
+              Start All
             </button>
             <button onClick={stop} className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground">Stop</button>
             <div className="ml-auto flex items-center gap-2">
@@ -260,62 +341,71 @@ export default function BotCenter() {
           </div>
         </div>
 
-        <div className="rounded-2xl border border-border bg-card p-4">
+        {/* Bots list */}
+        <div className="col-span-2 rounded-2xl border border-border bg-card p-4">
           <div className="flex items-center justify-between mb-2">
-            <div className="font-semibold">Live logs</div>
-            <button onClick={clearLogs} className="rounded-lg border border-border px-3 py-1 text-xs text-muted-foreground hover:text-foreground" type="button">
-              Clear
-            </button>
+            <div className="font-semibold">My Bots ({bots.length})</div>
           </div>
-          <div className="h-96 overflow-auto rounded-lg border border-border bg-background p-2 font-mono text-xs text-muted-foreground">
-            {logs.slice(0, 200).map((l, i) => (
-              <div key={i} className="whitespace-pre-wrap">
-                <span className="text-muted-foreground">{new Date(l.ts).toLocaleTimeString()} </span>
-                {l.message}
-                {l.meta ? ` ${(() => { try { return JSON.stringify(l.meta); } catch { return ""; } })()}` : ""}
+          <div className="space-y-2">
+            {bots.length === 0 && <div className="text-xs text-muted-foreground">No bots yet. Configure and "Add bot" to create.</div>}
+            {bots.map((b) => (
+              <div key={b.id} className="rounded-lg border border-border bg-background p-3 flex items-center justify-between">
+                <div>
+                  <div className="font-mono text-sm">{b.symbol} · {b.strategy_id || "no-strategy"}</div>
+                  <div className="text-xs text-muted-foreground">{availableAccounts.find((a:any)=>a.id===b.account_id)?.label ?? b.account_id} · {b.timeframe} · {b.mode}</div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button onClick={() => startSingle(b)} className="rounded-lg bg-emerald-600 px-2 py-1 text-xs text-white">Start</button>
+                  <button onClick={() => { setEditingBotId(b.id); setShowSettings(true); }} className="rounded-lg border border-border px-2 py-1 text-xs">Edit</button>
+                  <button onClick={() => removeBot(b.id)} className="rounded-lg border border-border px-2 py-1 text-xs text-rose-500">Remove</button>
+                </div>
               </div>
             ))}
           </div>
         </div>
-      </div>
 
-      {showSettings && (
-        <StrategySettingsModal
-          params={params}
+         <div className="rounded-2xl border border-border bg-card p-4">
+           <div className="flex items-center justify-between mb-2">
+             <div className="font-semibold">Live logs</div>
+             <button onClick={clearLogs} className="rounded-lg border border-border px-3 py-1 text-xs text-muted-foreground hover:text-foreground" type="button">
+               Clear
+             </button>
+           </div>
+           <div className="h-96 overflow-auto rounded-lg border border-border bg-background p-2 font-mono text-xs text-muted-foreground">
+             {logs.slice(0, 200).map((l, i) => (
+               <div key={i} className="whitespace-pre-wrap">
+                 <span className="text-muted-foreground">{new Date(l.ts).toLocaleTimeString()} </span>
+                 {l.message}
+                 {l.meta ? ` ${(() => { try { return JSON.stringify(l.meta); } catch { return ""; } })()}` : ""}
+               </div>
+             ))}
+           </div>
+         </div>
+       </div>
+
+       {showSettings && (
+         <StrategySettingsModal
+          params={editingBotId ? (bots.find(b=>b.id===editingBotId)?.params ?? params) : params}
           fields={(STRATEGY_SETTINGS[strategyId] ?? []).filter(f => f.category !== "execution")}
-           onClose={() => setShowSettings(false)}
-           onSave={async (next) => {
-             setParams(next);
-             await persistSettings(next);
-             setShowSettings(false);
-
-            // If bot is running, restart it with updated config so BotManager uses new params
-            try {
-              if (status?.state === "running") {
-                await startBot.mutateAsync({
-                  name: "YSB Bot",
-                  configs: [
-                    {
-                      account_id: accountId,
-                      symbol,
-                      timeframe,
-                      strategy_id: strategyId,
-                      mode,
-                      params: next,
-                      enabled: true,
-                    },
-                  ],
-                });
-                toast({ title: "Bot restarted", description: "Applied new settings to running bot." });
+            onClose={() => {
+              setShowSettings(false);
+              setEditingBotId(null);
+            }}
+            onSave={async (next) => {
+              // if editing an existing bot update it, otherwise update template params
+              if (editingBotId) {
+                updateBot(editingBotId, { params: next });
+              } else {
+                setParams(next);
+                await persistSettings(next);
               }
-            } catch (e: any) {
-              toast({ title: "Restart failed", description: String(e?.message ?? e), variant: "destructive" });
-            }
-          }}
-         />
-      )}
-    </div>
-  );
+              setShowSettings(false);
+              setEditingBotId(null);
+            }}
+          />
+       )}
+     </div>
+   );
 }
 
 function StrategySettingsModal({ params, onSave, onClose, fields }: {
