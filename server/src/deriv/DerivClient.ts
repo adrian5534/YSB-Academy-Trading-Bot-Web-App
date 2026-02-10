@@ -18,6 +18,11 @@ export class DerivClient {
   private onMessageCallback?: (msg: any) => void;
   private boundOnMessage?: (data: WebSocket.Data) => void;
 
+  // NEW: track endpoint rotation + heartbeat
+  private endpointIndex = 0;
+  private heartbeat?: NodeJS.Timeout;
+  private lastPong = 0;
+
   constructor(private token?: string, onMessage?: (msg: any) => void) {
     this.onMessageCallback = onMessage;
   }
@@ -28,10 +33,14 @@ export class DerivClient {
     const appId = Number(process.env.DERIV_APP_ID ?? (env as any)?.DERIV_APP_ID ?? DEFAULT_APP_ID);
     const errors: string[] = [];
 
-    for (const base of WS_ENDPOINTS) {
+    // rotate starting endpoint to spread load after failures
+    for (let i = 0; i < WS_ENDPOINTS.length; i++) {
+      const idx = (this.endpointIndex + i) % WS_ENDPOINTS.length;
+      const base = WS_ENDPOINTS[idx];
       const url = `${base}?app_id=${appId}`;
       try {
         await this.openAt(url);
+        this.endpointIndex = idx; // remember working endpoint
         if (this.token) await this.send({ authorize: this.token });
         return;
       } catch (e: any) {
@@ -75,10 +84,34 @@ export class DerivClient {
 
     this.ws.on("message", this.boundOnMessage);
 
+    // NEW: lifecycle + heartbeat
+    this.ws.on("close", () => {
+      this.isOpen = false;
+      if (this.heartbeat) { clearInterval(this.heartbeat); this.heartbeat = undefined; }
+    });
+    this.ws.on("pong", () => { this.lastPong = Date.now(); });
+
     await new Promise<void>((resolve, reject) => {
       const onOpen = () => {
         this.isOpen = true;
         this.ws?.off("error", onErrorOnce);
+        // start heartbeat (ws server should reply with pong)
+        this.lastPong = Date.now();
+        if (!this.heartbeat) {
+          this.heartbeat = setInterval(() => {
+            try {
+              if (!this.ws || !this.isOpen) return;
+              const now = Date.now();
+              if (now - this.lastPong > 60_000) {
+                // missed pong -> reconnect
+                this.reconnect("missed pong").catch(() => void 0);
+                return;
+              }
+              // send ping
+              (this.ws as any).ping?.();
+            } catch { /* ignore */ }
+          }, 25_000);
+        }
         resolve();
       };
       const onErrorOnce = (e: any) => {
@@ -97,9 +130,18 @@ export class DerivClient {
         this.ws.close();
       }
     } finally {
+      if (this.heartbeat) { clearInterval(this.heartbeat); this.heartbeat = undefined; }
       this.ws = null;
       this.isOpen = false;
     }
+  }
+
+  // NEW: reconnect helper (rotate endpoint and re-authorize)
+  private async reconnect(reason?: string) {
+    try { await this.disconnect(); } catch {}
+    // move to next endpoint for the next connect attempt
+    this.endpointIndex = (this.endpointIndex + 1) % WS_ENDPOINTS.length;
+    await this.connect();
   }
 
   setOnMessage(fn?: (msg: any) => void) {
@@ -119,14 +161,50 @@ export class DerivClient {
     });
   }
 
+  // NEW: send with retry (safeToRetry guards order placement)
+  private async sendWithRetry<T = any>(
+    payload: Record<string, any>,
+    opts?: { timeoutMs?: number; retries?: number; retryDelayMs?: number; safeToRetry?: boolean }
+  ): Promise<T> {
+    const timeoutMs = opts?.timeoutMs ?? 15000;
+    const retries = Math.max(0, opts?.retries ?? 2);
+    const retryDelayMs = opts?.retryDelayMs ?? 600;
+    const safe = !!opts?.safeToRetry;
+
+    let lastErr: any;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        if (!this.isOpen || !this.ws) await this.connect();
+        return await this.send<T>(payload, timeoutMs);
+      } catch (e: any) {
+        lastErr = e;
+        const msg = String(e?.message || e);
+        const isTimeout = msg.includes("timeout");
+        const isConn = msg.includes("not connected");
+        if (!safe && (isTimeout || isConn)) {
+          // do not risk duplicate orders
+          break;
+        }
+        if (attempt < retries && (isTimeout || isConn)) {
+          await this.reconnect(msg).catch(() => void 0);
+          await new Promise(r => setTimeout(r, retryDelayMs * (attempt + 1)));
+          continue;
+        }
+        break;
+      }
+    }
+    throw lastErr;
+  }
+
   // Raw ticks helper
   private async getTicks(symbol: string, count: number) {
-    const res = await this.send<any>({
+    // Increased timeout + retries (safe to retry)
+    const res = await this.sendWithRetry<any>({
       ticks_history: symbol,
       end: "latest",
       count: Number(count),
       style: "ticks",
-    });
+    }, { timeoutMs: 30_000, retries: 2, retryDelayMs: 700, safeToRetry: true });
     if (res?.error) throw new Error(res.error.message || "Deriv ticks error");
     const prices: number[] = res?.history?.prices ?? [];
     const times: number[] = res?.history?.times ?? [];
@@ -139,7 +217,8 @@ export class DerivClient {
   // Retrieve OHLC. For 1s, aggregate ticks into 1s candles.
   async candles(symbol: string, granularitySec: number, count: number) {
     if (granularitySec >= 60) {
-      const res = await this.send<any>({
+      // Increased timeout + retries (safe)
+      const res = await this.sendWithRetry<any>({
         ticks_history: symbol,
         end: "latest",
         count: Number(count),
@@ -147,7 +226,7 @@ export class DerivClient {
         style: "candles",
         granularity: Number(granularitySec),
         adjust_start_time: 1,
-      });
+      }, { timeoutMs: 30_000, retries: 2, retryDelayMs: 700, safeToRetry: true });
       if (res?.error) throw new Error(res.error.message || "Deriv candles error");
       const candles = res?.candles;
       if (!Array.isArray(candles)) throw new Error("No candles in response");
@@ -224,7 +303,8 @@ export class DerivClient {
     if (!Number.isFinite(dur) || dur <= 0) throw new Error("buyRiseFall: duration invalid");
     if (!unit) throw new Error("buyRiseFall: duration_unit required");
 
-    const proposal = await this.send<any>({
+    // Proposal: safe to retry
+    const proposal = await this.sendWithRetry<any>({
       proposal: 1,
       amount: amt,
       basis: "stake",
@@ -233,9 +313,12 @@ export class DerivClient {
       duration: dur,
       duration_unit: unit,
       symbol,
-    });
+    }, { timeoutMs: 20_000, retries: 2, retryDelayMs: 600, safeToRetry: true });
+
     const proposal_id = proposal?.proposal?.id;
     if (!proposal_id) throw new Error("No proposal_id from Deriv");
-    return this.send<any>({ buy: proposal_id, price: amt });
+
+    // Buy: NOT safe to retry automatically to avoid duplicate orders
+    return this.sendWithRetry<any>({ buy: proposal_id, price: amt }, { timeoutMs: 20_000, retries: 0, safeToRetry: false });
   }
 }
