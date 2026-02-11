@@ -28,21 +28,16 @@ type Running = {
   timer?: NodeJS.Timeout;
 };
 
-function timeframeToSec(tf: string) {
-  const m = /^([0-9]+)(s|m|h|d)$/.exec(tf);
-  if (!m) return 60;
-  const n = Number(m[1]);
-  const u = m[2];
-  if (u === "s") return n;
-  if (u === "m") return n * 60;
-  if (u === "h") return n * 3600;
-  return n * 86400;
-}
-
 export class BotManager {
-  private running = new Map<string, Running>(); // userId -> bot
+  // REPLACED: one run per user => many runs per user (keyed by userId::name)
+  // private running = new Map<string, Running>(); // userId -> bot
+  private runs = new Map<string, Running>(); // key `${userId}::${name}`
   private derivClients = new Map<string, DerivClient>(); // accountId -> client
   private deriv: DerivClient;
+
+  private runKey(userId: string, name: string) {
+    return `${userId}::${name}`;
+  }
 
   constructor(private hub: WsHub) {
     // create deriv client and attach safe handler
@@ -76,21 +71,29 @@ export class BotManager {
     });
   }
 
+  // Aggregate status (any run running => running)
   getStatus(userId: string) {
-    const bot = this.running.get(userId);
-    return bot
+    const entries = Array.from(this.runs.values()).filter(r => r.userId === userId);
+    const anyRunning = entries.some(r => r.state === "running");
+    return anyRunning
       ? {
-          state: bot.state,
-          name: bot.name,
-          started_at: bot.started_at,
-          heartbeat_at: bot.heartbeat_at,
-          active_configs: bot.configs.filter((c) => c.enabled).length,
+          state: "running",
+          name: entries.map(r => r.name).join(", "),
+          started_at: entries[0]?.started_at ?? null,
+          heartbeat_at: entries[0]?.heartbeat_at ?? null,
+          active_configs: entries.reduce((n, r) => n + r.configs.filter(c => c.enabled).length, 0),
         }
       : { state: "stopped", name: "YSB Bot", started_at: null, heartbeat_at: null, active_configs: 0 };
   }
 
+  // Start ONLY this named run (do not stop others)
   async start(userId: string, name: string, configs: Omit<BotConfig, "id">[]) {
-    await this.stop(userId);
+    const key = this.runKey(userId, name);
+
+    // replace existing run with same name (only)
+    const existing = this.runs.get(key);
+    if (existing?.timer) clearInterval(existing.timer);
+
     const bot: Running = {
       userId,
       name,
@@ -99,11 +102,10 @@ export class BotManager {
       heartbeat_at: new Date().toISOString(),
       configs: configs.map((c) => ({ ...c, id: uuidv4() })),
     };
-    this.running.set(userId, bot);
+    this.runs.set(key, bot);
 
-    // Debug: show what we will run
-    console.log("[BotManager.start] bot created", { userId, configs: bot.configs });
-    this.hub.log("bot.configs", { userId, configs: bot.configs });
+    console.log("[BotManager.start] run created", { userId, name, configs: bot.configs });
+    this.hub.log("bot.configs", { userId, name, configs: bot.configs });
 
     bot.timer = setInterval(() => {
       void this.tick(bot).catch((e: any) =>
@@ -112,15 +114,27 @@ export class BotManager {
     }, 5000);
 
     this.hub.status(this.getStatus(userId));
-    this.hub.log("bot started", { userId, configs: bot.configs.length });
+    this.hub.log("bot started", { userId, name, configs: bot.configs.length });
   }
 
-  async stop(userId: string) {
-    const bot = this.running.get(userId);
-    if (bot?.timer) clearInterval(bot.timer);
-    this.running.delete(userId);
+  // Stop this named run; if no name provided, stop all for user (backward compatible)
+  async stop(userId: string, name?: string) {
+    if (name) {
+      const key = this.runKey(userId, name);
+      const bot = this.runs.get(key);
+      if (bot?.timer) clearInterval(bot.timer);
+      this.runs.delete(key);
+      this.hub.log("bot stopped", { userId, name });
+    } else {
+      // stop all runs for user
+      for (const [key, bot] of Array.from(this.runs.entries())) {
+        if (bot.userId !== userId) continue;
+        if (bot.timer) clearInterval(bot.timer);
+        this.runs.delete(key);
+      }
+      this.hub.log("bot stopped (all)", { userId });
+    }
     this.hub.status(this.getStatus(userId));
-    this.hub.log("bot stopped", { userId });
   }
 
   private async getDerivClient(accountId: string, token: string) {
@@ -159,7 +173,6 @@ export class BotManager {
   private async tick(bot: Running) {
     bot.heartbeat_at = new Date().toISOString();
     this.hub.status(this.getStatus(bot.userId));
-
     for (const cfg of bot.configs.filter((c) => c.enabled)) {
       try {
         await this.runConfig(bot, cfg);
@@ -386,7 +399,7 @@ export class BotManager {
 
   // Replace running configs for a user (preserves config ids) and apply immediately
   public async updateConfigs(userId: string, configs: Omit<BotConfig, "id">[]) {
-    const bot = this.running.get(userId);
+    const bot = this.runs.get(userId);
     if (!bot) throw new Error("Bot not running");
     bot.configs = configs.map((c) => ({ ...c, id: uuidv4() }));
     this.hub.log("bot.configs.updated", { userId, configs: bot.configs });
@@ -427,10 +440,9 @@ export class BotManager {
 
       // If any running bot config watches this symbol we could trigger logic here.
       // Keep this cheap and defensive to avoid spamming or throwing.
-      for (const bot of this.running.values()) {
+      for (const bot of this.runs.values()) {
         const matches = bot.configs.some((c) => c.enabled && c.symbol === symbol);
         if (matches) {
-          // emit a cheap heartbeat/log for the specific user to help debugging.
           try {
             this.hub.log("tick match", { userId: bot.userId, symbol, epoch });
           } catch {}
@@ -443,4 +455,71 @@ export class BotManager {
       } catch {}
     }
   }
+}
+function timeframeToSec(timeframe: string): number {
+  // Deriv candles supported granularities (in seconds)
+  const allowed = [60, 120, 300, 600, 900, 1800, 3600, 7200, 14400, 28800, 86400];
+
+  if (!timeframe || typeof timeframe !== "string") {
+    throw new Error("Invalid timeframe");
+  }
+
+  const tf = timeframe.trim().toLowerCase();
+
+  const num = (s: string) => parseInt(s, 10);
+  const toSec = (n: number, u: string) => {
+    switch (u) {
+      case "s":
+        return n;
+      case "m":
+        return n * 60;
+      case "h":
+        return n * 3600;
+      case "d":
+        return n * 86400;
+      default:
+        return NaN;
+    }
+  };
+
+  // Accept forms like "5m", "1h", "d1", "H4", "M15", etc.
+  const m1 = tf.match(/^(\d+)\s*([smhd])$/); // 5m, 1h, 1d
+  const m2 = tf.match(/^([smhd])\s*(\d+)$/); // m5, h1, d1
+
+  let seconds: number | undefined;
+
+  if (m1) {
+    seconds = toSec(num(m1[1]), m1[2]);
+  } else if (m2) {
+    seconds = toSec(num(m2[2]), m2[1]);
+  } else if (/^\d+$/.test(tf)) {
+    // Bare number: treat as minutes for convenience (e.g., "15" => 15m)
+    seconds = num(tf) * 60;
+  } else if (/^(\d+)\s*(min|mins|minute|minutes)$/.test(tf)) {
+    const mm = tf.match(/^(\d+)\s*(min|mins|minute|minutes)$/)!;
+    seconds = num(mm[1]) * 60;
+  } else if (/^(\d+)\s*(hr|hour|hours)$/.test(tf)) {
+    const hm = tf.match(/^(\d+)\s*(hr|hour|hours)$/)!;
+    seconds = num(hm[1]) * 3600;
+  } else if (/^(\d+)\s*(day|days|d)$/.test(tf)) {
+    const dm = tf.match(/^(\d+)\s*(day|days|d)$/)!;
+    seconds = num(dm[1]) * 86400;
+  }
+
+  if (!seconds || !isFinite(seconds)) {
+    throw new Error(`Unsupported timeframe: ${timeframe}`);
+  }
+
+  // Enforce minimum 1m for candles
+  if (seconds < 60) seconds = 60;
+
+  // If exact match, return it
+  if (allowed.includes(seconds)) return seconds;
+
+  // Otherwise, snap to the nearest supported granularity
+  const nearest = allowed.reduce(
+    (best, g) => (Math.abs(g - seconds!) < Math.abs(best - seconds!) ? g : best),
+    allowed[0],
+  );
+  return nearest;
 }

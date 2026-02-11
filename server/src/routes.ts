@@ -368,13 +368,18 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
   );
 
   router.post(
-    api.bots.stop.path,
+    "/bot/stop",
     requireUser,
-    asyncRoute(async (req, res) => {
+    async (req, res) => {
       const r = req as AuthedRequest;
-      await botManager.stop(r.user.id);
-      res.json({ ok: true });
-    }),
+      const { name } = req.body ?? {};
+      try {
+        await botManager.stop(r.user.id, typeof name === "string" && name.trim() ? name : undefined);
+        res.json({ ok: true });
+      } catch (e: any) {
+        res.status(500).json({ error: String(e.message ?? e) });
+      }
+    },
   );
 
   // ===== Trades =====
@@ -484,7 +489,7 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
       const { data, error } = await supabaseAdmin.storage.from("journal-screenshots").createSignedUrl(body.path, 60 * 5);
       if (error) throw error;
       res.json(api.journals.signedUrl.responses[200].parse({ url: data.signedUrl }));
-    }),
+    });
   );
 
   // ===== Settings: risk rules =====

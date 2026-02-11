@@ -11,8 +11,6 @@ import { useKeepAlive } from "@/hooks/use-keep-alive";
 import { usePersistedState } from "@/hooks/use-persisted-state";
 import { useState as reactUseState } from "react";
 
-const MAX_TOTAL_CARDS = 4; // primary + extras (hard limit)
-
 type BotCfg = {
   id?: string; // present for extra cards
   account_id: string;
@@ -122,31 +120,9 @@ export default function BotCenter() {
 
   const isPro = sub?.plan === "pro";
 
-  // Disable all saved configs on an account to prevent "start all"
-  const disableAllSavedForAccount = async (acctId: string) => {
-    try {
-      const path = api.strategies.settingsForAccount.path.replace(":accountId", acctId);
-      const r = await apiFetch(path);
-      const list = (await r.json()) as any[];
-      await Promise.all(
-        (list || []).map((s) =>
-          apiFetch(api.strategies.setSettings.path, {
-            method: "POST",
-            body: JSON.stringify({
-              account_id: acctId,
-              symbol: s.symbol,
-              timeframe: s.timeframe,
-              strategy_id: s.strategy_id,
-              params: s.params,
-              enabled: false,
-            }),
-          })
-        )
-      );
-    } catch {
-      /* ignore */
-    }
-  };
+  const runNamePrimary = `YSB Bot - ${symbol}-${timeframe}-${strategyId || "none"}`;
+  const runNameOf = (b: any) =>
+    `YSB Bot - ${b.symbol}-${b.timeframe}-${b.strategy_id || "none"}-${String(b.id || "").slice(-4)}`;
 
   // Primary start: ONLY start the primary config with a unique run name
   const start = async () => {
@@ -159,14 +135,11 @@ export default function BotCenter() {
         toast({ title: "Missing fields", description: "Select account and strategy.", variant: "destructive" });
         return;
       }
-      // disable any saved enabled configs on this account
-      await disableAllSavedForAccount(accountId);
-      // Persist current config as disabled (storage only)
+      // optional: persist current settings (do not enable)
       await persistSettings({ ...params }, false);
 
-      const runName = `YSB Bot - ${symbol}-${timeframe}-${strategyId}`;
       await startBot.mutateAsync({
-        name: runName,
+        name: runNamePrimary,
         configs: [
           {
             account_id: accountId,
@@ -185,10 +158,10 @@ export default function BotCenter() {
     }
   };
 
-  const stop = async () => {
+  const stopRun = async (name: string) => {
     try {
-      await stopBot.mutateAsync();
-      toast({ title: "Bot stopped" });
+      await stopBot.mutateAsync({ name });
+      toast({ title: "Bot stopped", description: name });
     } catch (e: any) {
       toast({ title: "Stop failed", description: String(e.message ?? e), variant: "destructive" });
     }
@@ -205,9 +178,7 @@ export default function BotCenter() {
         toast({ title: "Missing fields", description: "Select account and strategy.", variant: "destructive" });
         return;
       }
-      // disable any saved enabled configs on this account
-      await disableAllSavedForAccount(b.account_id);
-      // Persist this card's config as disabled (storage only)
+      // optional: persist settings (do not enable)
       await apiFetch(api.strategies.setSettings.path, {
         method: "POST",
         body: JSON.stringify({
@@ -220,9 +191,8 @@ export default function BotCenter() {
         }),
       }).catch(() => void 0);
 
-      const runName = `YSB Bot - ${b.symbol}-${b.timeframe}-${b.strategy_id}-${b.id.slice(-4)}`;
       await startBot.mutateAsync({
-        name: runName,
+        name: runNameOf(b),
         configs: [
           {
             account_id: b.account_id,
@@ -385,7 +355,7 @@ export default function BotCenter() {
             >
               {status?.state === "running" ? "RESTART" : "START"}
             </button>
-            <button onClick={stop} className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground">Stop</button>
+            <button onClick={() => stopRun(runNamePrimary)} className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground">Stop</button>
             <div className="ml-auto flex items-center gap-2">
               <select className="rounded-lg border border-border bg-background px-3 py-2 text-sm" value={mode} onChange={(e) => setMode(e.target.value as any)}>
                 <option value="backtest">Backtest</option>
@@ -471,7 +441,7 @@ export default function BotCenter() {
               >
                 {status?.state === "running" ? "RESTART" : "START"}
               </button>
-              <button onClick={stop} className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground">Stop</button>
+              <button onClick={() => stopRun(runNameOf(b))} className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground">Stop</button>
               <div className="ml-auto flex items-center gap-2">
                 <select
                   className="rounded-lg border border-border bg-background px-3 py-2 text-sm"
