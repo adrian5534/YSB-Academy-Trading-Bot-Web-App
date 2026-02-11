@@ -368,18 +368,14 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
   );
 
   router.post(
-    "/bot/stop",
+    api.bots.stop.path, // <<< use the shared path (e.g. /api/bots/stop)
     requireUser,
-    async (req, res) => {
+    asyncRoute(async (req, res) => {
       const r = req as AuthedRequest;
-      const { name } = req.body ?? {};
-      try {
-        await botManager.stop(r.user.id, typeof name === "string" && name.trim() ? name : undefined);
-        res.json({ ok: true });
-      } catch (e: any) {
-        res.status(500).json({ error: String(e.message ?? e) });
-      }
-    },
+      const { name } = (req.body ?? {}) as { name?: string };
+      await botManager.stop(r.user.id, typeof name === "string" && name.trim() ? name : undefined);
+      res.json({ ok: true });
+    }),
   );
 
   // ===== Trades =====

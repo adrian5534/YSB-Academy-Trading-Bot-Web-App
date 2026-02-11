@@ -28,14 +28,12 @@ export function useStartBot() {
 }
 
 export function useStopBot() {
-  const qc = useQueryClient();
   return useMutation({
-    mutationFn: async () => {
-      const res = await apiFetch(api.bots.stop.path, { method: "POST" });
-      return api.bots.stop.responses[200].parse(await res.json());
-    },
-    onSuccess: async () => {
-      await qc.invalidateQueries({ queryKey: [api.bots.status.path] });
+    mutationFn: async (payload?: { name?: string }) => {
+      await apiFetch(api.bots.stop.path, {
+        method: "POST",
+        body: JSON.stringify(payload ?? {}),
+      });
     },
   });
 }
