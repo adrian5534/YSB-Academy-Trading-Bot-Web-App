@@ -126,6 +126,10 @@ export default function BotCenter() {
   const runNameOf = (b: any) =>
     `YSB Bot - ${b.symbol}-${b.timeframe}-${b.strategy_id || "none"}-${String(b.id || "").slice(-4)}`;
 
+  // derive per-run state from status.runs
+  const runs = status?.runs ?? [];
+  const isRunRunning = (rid: string) => runs.some((r) => r.run_id === rid && r.state === "running");
+
   // Primary start: ONLY start the primary config with a unique run name
   const start = async () => {
     try {
@@ -140,7 +144,7 @@ export default function BotCenter() {
       // optional: persist current settings (do not enable)
       await persistSettings({ ...params }, false);
       await startBot.mutateAsync({
-        run_id: runIdPrimary, // NEW
+        run_id: runIdPrimary,
         name: runNamePrimary,
         configs: [
           {
@@ -162,7 +166,7 @@ export default function BotCenter() {
 
   const stopRun = async (runId: string) => {
     try {
-      await stopBot.mutateAsync({ run_id: runId }); // NEW: stop by run_id only
+      await stopBot.mutateAsync({ run_id: runId });
       toast({ title: "Bot stopped", description: runId });
     } catch (e: any) {
       toast({ title: "Stop failed", description: String(e.message ?? e), variant: "destructive" });
@@ -194,7 +198,7 @@ export default function BotCenter() {
       }).catch(() => void 0);
 
       await startBot.mutateAsync({
-        run_id: runIdOf(b), // NEW
+        run_id: runIdOf(b),
         name: runNameOf(b),
         configs: [
           {
@@ -356,7 +360,7 @@ export default function BotCenter() {
               disabled={!strategyId || (!isPro && (mode === "paper" || mode === "live"))}
               className={`rounded-lg px-3 py-2 font-semibold ${(!strategyId || (!isPro && (mode === "paper" || mode === "live"))) ? "border border-border bg-muted text-muted-foreground cursor-not-allowed" : "bg-ysbPurple text-ysbYellow hover:opacity-90"}`}
             >
-              {status?.state === "running" ? "RESTART" : "START"}
+              {isRunRunning(runIdPrimary) ? "RESTART" : "START"}
             </button>
             <button onClick={() => stopRun(runIdPrimary)} className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground">Stop</button>
             <div className="ml-auto flex items-center gap-2">
@@ -442,7 +446,7 @@ export default function BotCenter() {
                 disabled={!b.strategy_id || !b.account_id || (!isPro && (b.mode === "paper" || b.mode === "live"))}
                 className={`rounded-lg px-3 py-2 font-semibold ${(!b.strategy_id || !b.account_id || (!isPro && (b.mode === "paper" || b.mode === "live"))) ? "border border-border bg-muted text-muted-foreground cursor-not-allowed" : "bg-ysbPurple text-ysbYellow hover:opacity-90"}`}
               >
-                {status?.state === "running" ? "RESTART" : "START"}
+                {isRunRunning(runIdOf(b)) ? "RESTART" : "START"}
               </button>
               <button onClick={() => stopRun(runIdOf(b))} className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground">Stop</button>
               <div className="ml-auto flex items-center gap-2">

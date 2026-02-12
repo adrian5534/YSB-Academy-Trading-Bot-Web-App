@@ -31,7 +31,7 @@ type Running = {
 
 export class BotManager {
   private runs = new Map<string, Running>(); // key = `${userId}::${runId}`
-  private deriv!: DerivClient;
+  // Removed global DerivClient; use per-account clients only.
   private derivClients = new Map<string, DerivClient>();
 
   private runKey(userId: string, runId: string) {
@@ -39,18 +39,7 @@ export class BotManager {
   }
 
   constructor(private hub: WsHub) {
-    this.deriv = new DerivClient();
-
-    this.deriv.setOnMessage((msg: any): void => {
-      try {
-        if (msg?.tick) this.handleTickSafely(msg.tick);
-      } catch (e: unknown) {
-        console.error("tick error", (e as any) && ((e as any).stack || (e as any).message || e));
-        try {
-          console.debug("tick payload:", JSON.stringify(msg));
-        } catch {}
-      }
-    });
+    // No global streaming client. All market data access is scoped via per-account clients.
   }
 
   // Status with per-run list
@@ -99,14 +88,16 @@ export class BotManager {
 
     this.hub.log("bot.configs", { userId, runId, name, configs: bot.configs });
     bot.timer = setInterval(() => {
-      void this.tick(bot).catch((e: any) => this.hub.log(`tick error: ${e?.stack || e?.message || String(e)}`));
+      void this.tick(bot).catch((e: any) =>
+        this.hub.log(`tick error: ${e?.stack || e?.message || String(e)}`)
+      );
     }, 5000);
 
     this.hub.status(this.getStatus(userId));
     this.hub.log("bot started", { userId, runId, name, configs: bot.configs.length });
   }
 
-  // Stop this runId
+  // Deprecated global stop; keep no-op unless name provided (back-compat)
   async stop(userId: string, name?: string) {
     if (!name) {
       this.hub.log("stop called without name; ignoring to avoid stop-all", { userId });
@@ -116,10 +107,11 @@ export class BotManager {
     const bot = this.runs.get(key);
     if (bot?.timer) clearInterval(bot.timer);
     this.runs.delete(key);
-    this.hub.log("bot stopped", { userId, name });
+    this.hub.log("bot stopped", { userId, runId: name });
     this.hub.status(this.getStatus(userId));
   }
 
+  // Stop this specific runId
   async stopById(userId: string, runId: string) {
     const key = this.runKey(userId, runId);
     const bot = this.runs.get(key);
@@ -137,7 +129,10 @@ export class BotManager {
       try {
         if (msg?.tick) this.handleTickSafely(msg.tick);
       } catch (e) {
-        console.error("tick error (per-account)", (e as any) && ((e as any).stack || (e as any).message || e));
+        console.error(
+          "tick error (per-account)",
+          (e as any) && ((e as any).stack || (e as any).message || e)
+        );
         try {
           console.debug("tick payload (per-account):", JSON.stringify(msg));
         } catch {}
@@ -149,7 +144,11 @@ export class BotManager {
   }
 
   private async accountToken(accountId: string): Promise<string> {
-    const { data, error } = await supabaseAdmin.from("accounts").select("secrets").eq("id", accountId).maybeSingle();
+    const { data, error } = await supabaseAdmin
+      .from("accounts")
+      .select("secrets")
+      .eq("id", accountId)
+      .maybeSingle();
     if (error) throw error;
     const secrets = (data?.secrets ?? {}) as any;
     const enc = secrets?.deriv_token_enc;
@@ -162,8 +161,10 @@ export class BotManager {
   }
 
   private async tick(bot: Running) {
+    // Only touch this run
     bot.heartbeat_at = new Date().toISOString();
     this.hub.status(this.getStatus(bot.userId));
+
     for (const cfg of bot.configs.filter((c) => c.enabled)) {
       try {
         await this.runConfig(bot, cfg);
@@ -191,18 +192,9 @@ export class BotManager {
       return;
     }
 
-    const secrets = acc.secrets as any;
-    const enc = secrets?.deriv_token_enc;
-    if (!enc) {
-      this.hub.log("No Deriv token stored for account", { accountId: cfg.account_id });
-      return;
-    }
-
     let token = "";
     try {
-      const { decryptJson } = await import("../crypto/secrets");
-      const dec: any = decryptJson(enc as any);
-      token = String(dec?.token ?? "");
+      token = await this.accountToken(cfg.account_id);
     } catch (e) {
       this.hub.log("Failed to decrypt Deriv token", { error: String(e) });
       return;
@@ -224,7 +216,7 @@ export class BotManager {
       v: Number(c.volume ?? 0),
     }));
 
-    // IMPORTANT: backtest should run unconditionally, not gated on a live signal
+    // Backtest mode
     if (cfg.mode === "backtest") {
       try {
         this.hub.log("starting backtest", { symbol: cfg.symbol, timeframe: cfg.timeframe, accountId: cfg.account_id });
@@ -303,7 +295,7 @@ export class BotManager {
       return; // don't run live/paper flow after backtest
     }
 
-    // For paper/live modes, generate a current signal and apply risk gates
+    // Paper/Live modes
     const strat = getStrategy(cfg.strategy_id);
     const ctx: StrategyContext = { symbol: cfg.symbol, timeframe: cfg.timeframe as any, now: new Date() };
     const signal = strat.generateSignal(candles, ctx, cfg.params);
@@ -317,7 +309,6 @@ export class BotManager {
       return;
     }
 
-    // stake estimation (Deriv balance not fetched here; use placeholder)
     const rules = await getRiskRules(bot.userId);
     const stake = computeStake(rules, 1000);
 
@@ -391,7 +382,7 @@ export class BotManager {
   // Replace running configs for a user (preserves config ids) and apply immediately
   public async updateConfigs(userId: string, configs: Omit<BotConfig, "id">[]) {
     let updated = 0;
-    for (const [key, bot] of this.runs) {
+    for (const [, bot] of this.runs) {
       if (bot.userId !== userId) continue;
       bot.configs = configs.map((c) => ({ ...c, id: uuidv4() }));
       updated++;
@@ -401,33 +392,23 @@ export class BotManager {
   }
 
   private handleTickSafely(tick: any) {
-    // existing tick processing moved here (defensive, with sanity checks)
+    // Defensive, non-intrusive tick handling (no cross-run side effects)
     try {
       if (!tick || typeof tick.epoch !== "number") {
-        console.debug("ignoring malformed tick", tick);
         return;
       }
-
-      // Basic sanity: ensure symbol and quote present
       const symbol = String(tick.symbol ?? "").trim();
       const epoch = Number(tick.epoch);
       const quote = typeof tick.quote === "number" ? tick.quote : tick.quote ? Number(tick.quote) : undefined;
+      if (!symbol) return;
 
-      if (!symbol) {
-        console.debug("ignoring tick with no symbol", tick);
-        return;
-      }
-
-      // Lightweight handling: surface ticks to connected clients for visibility
-      // and optionally correlate to running bot configs (non-blocking).
       try {
         this.hub.log("tick", { symbol, epoch, quote });
       } catch {
         /* ignore hub logging errors */
       }
 
-      // If any running bot config watches this symbol we could trigger logic here.
-      // Keep this cheap and defensive to avoid spamming or throwing.
+      // Optional lightweight correlation (logging only)
       for (const bot of this.runs.values()) {
         const matches = bot.configs.some((c) => c.enabled && c.symbol === symbol);
         if (matches) {
@@ -444,6 +425,7 @@ export class BotManager {
     }
   }
 }
+
 function timeframeToSec(timeframe: string): number {
   // Deriv candles supported granularities (in seconds)
   const allowed = [60, 120, 300, 600, 900, 1800, 3600, 7200, 14400, 28800, 86400];
