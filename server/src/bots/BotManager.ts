@@ -117,6 +117,32 @@ export class BotManager {
     this.hub.log("bot started", { userId, name, configs: bot.configs.length });
   }
 
+  // NEW: start by runId (name is just a label)
+  async startById(userId: string, runId: string, name: string, configs: Omit<BotConfig, "id">[]) {
+    const key = this.runKey(userId, runId);
+    const existing = this.runs.get(key);
+    if (existing?.timer) clearInterval(existing.timer);
+
+    const bot: Running = {
+      userId,
+      runId,
+      name,
+      state: "running",
+      started_at: new Date().toISOString(),
+      heartbeat_at: new Date().toISOString(),
+      configs: configs.map((c) => ({ ...c, id: uuidv4() })),
+    };
+    this.runs.set(key, bot);
+
+    this.hub.log("bot.configs", { userId, runId, name, configs: bot.configs });
+    bot.timer = setInterval(() => {
+      void this.tick(bot).catch((e: any) => this.hub.log(`tick error: ${e?.stack || e?.message || String(e)}`));
+    }, 5000);
+
+    this.hub.status(this.getStatus(userId));
+    this.hub.log("bot started", { userId, runId, name, configs: bot.configs.length });
+  }
+
   // Stop this named run; if no name provided, stop all for user (backward compatible)
   async stop(userId: string, name?: string) {
     if (name) {
@@ -134,6 +160,16 @@ export class BotManager {
       }
       this.hub.log("bot stopped (all)", { userId });
     }
+    this.hub.status(this.getStatus(userId));
+  }
+
+  // NEW: stop by runId
+  async stopById(userId: string, runId: string) {
+    const key = this.runKey(userId, runId);
+    const bot = this.runs.get(key);
+    if (bot?.timer) clearInterval(bot.timer);
+    this.runs.delete(key);
+    this.hub.log("bot stopped", { userId, runId });
     this.hub.status(this.getStatus(userId));
   }
 
@@ -399,17 +435,14 @@ export class BotManager {
 
   // Replace running configs for a user (preserves config ids) and apply immediately
   public async updateConfigs(userId: string, configs: Omit<BotConfig, "id">[]) {
-    const bot = this.runs.get(userId);
-    if (!bot) throw new Error("Bot not running");
-    bot.configs = configs.map((c) => ({ ...c, id: uuidv4() }));
-    this.hub.log("bot.configs.updated", { userId, configs: bot.configs });
-    this.hub.status(this.getStatus(userId));
-    // Optionally trigger an immediate tick for the new configs
-    try {
-      await this.tick(bot);
-    } catch (e) {
-      this.hub.log("apply-configs error", { error: String(e) });
+    let updated = 0;
+    for (const [key, bot] of this.runs) {
+      if (bot.userId !== userId) continue;
+      bot.configs = configs.map((c) => ({ ...c, id: uuidv4() }));
+      updated++;
     }
+    this.hub.log("bot.configs.updated", { userId, runs_updated: updated });
+    this.hub.status(this.getStatus(userId));
   }
 
   private handleTickSafely(tick: any) {

@@ -11,6 +11,9 @@ import { supabaseAdmin } from "./supabase";
 
 const app = express();
 
+// For correct x-forwarded-proto on Render/Proxies
+app.set("trust proxy", 1);
+
 // Stripe webhook needs raw body; mount first
 app.post("/api/stripe/webhook", express.raw({ type: "application/json" }), (req, res) => {
   try {
@@ -114,8 +117,7 @@ async function handleStripeEvent(event: Stripe.Event) {
           }
         }
 
-        // Fallback: if no subscription row matched by customer, try to upsert by subscription metadata (if you store user_id there)
-        // (left intentionally minimal; extend if you store user_id in Stripe metadata)
+        // Fallback note: extend if you store user_id in Stripe metadata
       }
     } catch (e) {
       // eslint-disable-next-line no-console

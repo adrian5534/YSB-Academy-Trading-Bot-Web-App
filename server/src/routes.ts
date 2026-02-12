@@ -1,5 +1,5 @@
 import express from "express";
-import { api } from "@shared/routes";
+import { api } from "../../shared/routes";
 import { supabaseAdmin } from "./supabase";
 import { requireUser, type AuthedRequest } from "./middleware/auth";
 import { requireProForPaperLive } from "./middleware/subscription";
@@ -342,8 +342,6 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
       res.json({ ok: true });
     }),
   );
-
-  // (Removed duplicate unprotected /api/strategies/settings handlers — use the router endpoints above which run requireUser)
 
   // ===== Bots =====
   router.get(
