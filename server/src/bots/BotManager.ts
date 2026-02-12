@@ -39,30 +39,13 @@ export class BotManager {
   }
 
   constructor(private hub: WsHub) {
-    // create deriv client and attach safe handler
-    this.deriv = new DerivClient(/* token? */);
+    this.deriv = new DerivClient();
 
-    interface DerivTick {
-      epoch: number;
-      quote?: number;
-      symbol?: string;
-      [key: string]: unknown;
-    }
-
-    interface DerivWsMessage {
-      tick?: DerivTick;
-      [key: string]: unknown;
-    }
-
-    this.deriv.setOnMessage((msg: DerivWsMessage): void => {
+    this.deriv.setOnMessage((msg: any): void => {
       try {
-        // only handle tick messages here; ignore others
-        if (msg?.tick) {
-          this.handleTickSafely(msg.tick);
-        }
+        if (msg?.tick) this.handleTickSafely(msg.tick);
       } catch (e: unknown) {
         console.error("tick error", (e as any) && ((e as any).stack || (e as any).message || e));
-        // optional: log raw payload for debugging
         try {
           console.debug("tick payload:", JSON.stringify(msg));
         } catch {}
@@ -70,54 +53,34 @@ export class BotManager {
     });
   }
 
-  // Aggregate status (any run running => running)
+  // Status with per-run list
   getStatus(userId: string) {
-    const entries = Array.from(this.runs.values()).filter(r => r.userId === userId);
-    const anyRunning = entries.some(r => r.state === "running");
-    return anyRunning
-      ? {
-          state: "running",
-          name: entries.map(r => r.name).join(", "),
-          started_at: entries[0]?.started_at ?? null,
-          heartbeat_at: entries[0]?.heartbeat_at ?? null,
-          active_configs: entries.reduce((n, r) => n + r.configs.filter(c => c.enabled).length, 0),
-        }
-      : { state: "stopped", name: "YSB Bot", started_at: null, heartbeat_at: null, active_configs: 0 };
-  }
+    const runs = Array.from(this.runs.values())
+      .filter((r) => r.userId === userId)
+      .map((r) => ({
+        run_id: r.runId,
+        name: r.name,
+        state: r.state,
+        started_at: r.started_at,
+        heartbeat_at: r.heartbeat_at,
+        active_configs: r.configs.filter((c) => c.enabled).length,
+      }));
 
-  // Start ONLY this named run (do not stop others)
-  async start(userId: string, name: string, configs: Omit<BotConfig, "id">[]) {
-    const key = this.runKey(userId, name);
-
-    // replace existing run with same name (only)
-    const existing = this.runs.get(key);
-    if (existing?.timer) clearInterval(existing.timer);
-
-    const bot: Running = {
-      userId,
-      runId: name,
-      name,
-      state: "running",
-      started_at: new Date().toISOString(),
-      heartbeat_at: new Date().toISOString(),
-      configs: configs.map((c) => ({ ...c, id: uuidv4() })),
+    const anyRunning = runs.some((r) => r.state === "running");
+    return {
+      state: anyRunning ? "running" : "stopped",
+      started_at: anyRunning ? runs[0]?.started_at ?? null : null,
+      heartbeat_at: anyRunning ? runs[0]?.heartbeat_at ?? null : null,
+      active_configs: runs.reduce((n, r) => n + r.active_configs, 0),
+      runs,
     };
-    this.runs.set(key, bot);
-
-    console.log("[BotManager.start] run created", { userId, name, configs: bot.configs });
-    this.hub.log("bot.configs", { userId, name, configs: bot.configs });
-
-    bot.timer = setInterval(() => {
-      void this.tick(bot).catch((e: any) =>
-        this.hub.log(`tick error: ${e?.stack || e?.message || String(e)}`)
-      );
-    }, 5000);
-
-    this.hub.status(this.getStatus(userId));
-    this.hub.log("bot started", { userId, name, configs: bot.configs.length });
   }
 
-  // NEW: start by runId (name is just a label)
+  // Start ONLY this runId
+  async start(userId: string, name: string, configs: Omit<BotConfig, "id">[]) {
+    await this.startById(userId, name, name, configs);
+  }
+
   async startById(userId: string, runId: string, name: string, configs: Omit<BotConfig, "id">[]) {
     const key = this.runKey(userId, runId);
     const existing = this.runs.get(key);
@@ -143,27 +106,20 @@ export class BotManager {
     this.hub.log("bot started", { userId, runId, name, configs: bot.configs.length });
   }
 
-  // Stop this named run; if no name provided, stop all for user (backward compatible)
+  // Stop this runId
   async stop(userId: string, name?: string) {
-    if (name) {
-      const key = this.runKey(userId, name);
-      const bot = this.runs.get(key);
-      if (bot?.timer) clearInterval(bot.timer);
-      this.runs.delete(key);
-      this.hub.log("bot stopped", { userId, name });
-    } else {
-      // stop all runs for user
-      for (const [key, bot] of Array.from(this.runs.entries())) {
-        if (bot.userId !== userId) continue;
-        if (bot.timer) clearInterval(bot.timer);
-        this.runs.delete(key);
-      }
-      this.hub.log("bot stopped (all)", { userId });
+    if (!name) {
+      this.hub.log("stop called without name; ignoring to avoid stop-all", { userId });
+      return;
     }
+    const key = this.runKey(userId, name);
+    const bot = this.runs.get(key);
+    if (bot?.timer) clearInterval(bot.timer);
+    this.runs.delete(key);
+    this.hub.log("bot stopped", { userId, name });
     this.hub.status(this.getStatus(userId));
   }
 
-  // NEW: stop by runId
   async stopById(userId: string, runId: string) {
     const key = this.runKey(userId, runId);
     const bot = this.runs.get(key);
@@ -177,7 +133,6 @@ export class BotManager {
     const existing = this.derivClients.get(accountId);
     if (existing) return existing;
     const c = new DerivClient(token);
-    // attach same safe handler to per-account client
     c.setOnMessage((msg: any) => {
       try {
         if (msg?.tick) this.handleTickSafely(msg.tick);

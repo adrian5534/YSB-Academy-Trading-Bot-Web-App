@@ -128,12 +128,23 @@ export const zBotStartReq = z.object({
   configs: z.array(zBotConfig).min(1),
 });
 
-export const zBotStatus = z.object({
-  state: z.enum(BOT_STATES),
+// Per-run snapshot
+export const zBotRun = z.object({
+  run_id: z.string(),
   name: z.string(),
+  state: z.enum(BOT_STATES),
   started_at: zIsoDate.nullable(),
   heartbeat_at: zIsoDate.nullable(),
   active_configs: z.number(),
+});
+
+// Overall status with per-run list
+export const zBotStatus = z.object({
+  state: z.enum(BOT_STATES),
+  started_at: zIsoDate.nullable(),
+  heartbeat_at: zIsoDate.nullable(),
+  active_configs: z.number(),
+  runs: z.array(zBotRun),
 });
 
 // Trades / Journals
@@ -257,7 +268,7 @@ export const api = {
       path: "/api/bots/start",
       input: z.object({
         name: z.string(),
-        run_id: z.string().optional(), // allow per-card run id
+        run_id: z.string().optional(),
         configs: z.array(
           z.object({
             account_id: z.string(),
@@ -274,7 +285,8 @@ export const api = {
     },
     stop: {
       path: "/api/bots/stop",
-      input: z.object({ run_id: z.string().optional(), name: z.string().optional() }).optional(),
+      // require run_id to avoid stopping all by mistake
+      input: z.object({ run_id: z.string() }),
       responses: { 200: z.object({ ok: z.boolean() }) },
     },
   },

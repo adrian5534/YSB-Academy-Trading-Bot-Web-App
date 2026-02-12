@@ -20,7 +20,7 @@ export function useStartBot() {
   return useMutation({
     mutationFn: async (body: {
       name: string;
-      run_id?: string;
+      run_id: string; // now required to target a single card
       configs: Array<{
         account_id: string;
         symbol: string;
@@ -45,10 +45,10 @@ export function useStartBot() {
 export function useStopBot() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (payload?: { run_id?: string; name?: string }) => {
+    mutationFn: async (payload: { run_id: string }) => {
       await apiFetch(api.bots.stop.path, {
         method: "POST",
-        body: JSON.stringify(payload ?? {}),
+        body: JSON.stringify(payload),
       });
     },
     onSuccess: () => {

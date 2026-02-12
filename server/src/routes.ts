@@ -12,6 +12,7 @@ import { parseCsv, runBacktest } from "./backtests/runBacktest";
 import { requireStripe } from "./stripe/stripe";
 import { env } from "./env";
 import { z } from "zod";
+import { randomUUID } from "node:crypto";
 
 const zRiskRules = z.object({
   risk_type: z.string().default("fixed"),
@@ -360,7 +361,7 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
     asyncRoute(async (req, res) => {
       const r = req as AuthedRequest;
       const body = api.bots.start.input.parse(req.body);
-      const runId = (req.body?.run_id as string | undefined) || body.name;
+      const runId = (req.body?.run_id as string | undefined) || randomUUID();
       await botManager.startById(
         r.user.id,
         runId,
@@ -384,9 +385,9 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
     requireUser,
     asyncRoute(async (req, res) => {
       const r = req as AuthedRequest;
-      const { run_id, name } = (req.body ?? {}) as { run_id?: string; name?: string };
-      if (run_id && run_id.trim()) await botManager.stopById(r.user.id, run_id);
-      else await botManager.stop(r.user.id, name && name.trim() ? name : undefined);
+      const body = api.bots.stop.input.parse(req.body ?? {});
+      if (!body.run_id) return res.status(400).json({ error: "run_id required" });
+      await botManager.stopById(r.user.id, body.run_id);
       res.json({ ok: true });
     }),
   );
