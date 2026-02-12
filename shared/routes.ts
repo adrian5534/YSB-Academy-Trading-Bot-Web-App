@@ -197,7 +197,8 @@ export const api = {
   },
   stripe: {
     createCheckout: {
-      path: "/api/stripe/create-checkout-session",
+      // align with server route
+      path: "/api/stripe/create-checkout",
       input: z.object({ return_url: z.string().url() }),
       responses: { 200: z.object({ url: z.string().url() }) },
     },
@@ -248,20 +249,26 @@ export const api = {
     },
   },
   bots: {
+    status: {
+      path: "/api/bots/status",
+      responses: { 200: zBotStatus },
+    },
     start: {
       path: "/api/bots/start",
       input: z.object({
         name: z.string(),
         run_id: z.string().optional(), // allow per-card run id
-        configs: z.array(z.object({
-          account_id: z.string(),
-          symbol: z.string(),
-          timeframe: z.string(),
-          strategy_id: z.string(),
-          mode: z.enum(["backtest", "paper", "live"]),
-          params: z.record(z.any()),
-          enabled: z.boolean(),
-        })),
+        configs: z.array(
+          z.object({
+            account_id: z.string(),
+            symbol: z.string(),
+            timeframe: z.string(),
+            strategy_id: z.string(),
+            mode: z.enum(["backtest", "paper", "live"]),
+            params: z.record(z.any()),
+            enabled: z.boolean(),
+          }),
+        ),
       }),
       responses: { 200: z.object({ ok: z.boolean() }) },
     },
