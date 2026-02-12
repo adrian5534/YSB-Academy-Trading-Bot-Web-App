@@ -230,25 +230,29 @@ export const api = {
   strategies: {
     list: { path: "/api/strategies", responses: { 200: z.array(zStrategyMeta) } },
     setSettings: {
-      path: "/api/strategies/settings",
+      path: "/api/strategies/set-settings",
       input: z.object({
-        account_id: zUuid,
+        account_id: z.string(),
         symbol: z.string(),
-        timeframe: zBotConfig.shape.timeframe,
-        strategy_id: zStrategyMeta.shape.id,
+        timeframe: z.string(),
+        strategy_id: z.string(),
         params: z.record(z.any()),
-        enabled: z.boolean(),
+        enabled: z.boolean().optional(),
       }),
-      responses: { 200: z.object({ ok: z.boolean() }) },
+      responses: { 200: z.object({ ok: z.boolean().optional() }).partial() },
     },
-    settingsForAccount: { path: "/api/strategies/settings/:accountId", responses: { 200: z.array(z.record(z.any())) } },
+    settingsForAccount: {
+      path: "/api/strategies/:accountId/settings",
+      input: z.unknown().optional(),
+      responses: { 200: z.array(z.any()) },
+    },
   },
   bots: {
     start: {
       path: "/api/bots/start",
       input: z.object({
         name: z.string(),
-        run_id: z.string().optional(), // NEW
+        run_id: z.string().optional(), // allow per-card run id
         configs: z.array(z.object({
           account_id: z.string(),
           symbol: z.string(),
@@ -263,7 +267,7 @@ export const api = {
     },
     stop: {
       path: "/api/bots/stop",
-      input: z.object({ run_id: z.string().optional(), name: z.string().optional() }).optional(), // NEW
+      input: z.object({ run_id: z.string().optional(), name: z.string().optional() }).optional(),
       responses: { 200: z.object({ ok: z.boolean() }) },
     },
   },

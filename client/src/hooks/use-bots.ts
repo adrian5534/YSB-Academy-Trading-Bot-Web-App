@@ -1,6 +1,6 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@shared/routes";
 import { apiFetch } from "@/lib/api";
+import { useMutation, useQuery } from "@tanstack/react-query";
 
 export function useBotStatus() {
   return useQuery({
@@ -14,22 +14,31 @@ export function useBotStatus() {
 }
 
 export function useStartBot() {
-  const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (data: unknown) => {
-      const payload = api.bots.start.input.parse(data);
-      const res = await apiFetch(api.bots.start.path, { method: "POST", body: JSON.stringify(payload) });
-      return api.bots.start.responses[200].parse(await res.json());
-    },
-    onSuccess: async () => {
-      await qc.invalidateQueries({ queryKey: [api.bots.status.path] });
+    mutationFn: async (body: {
+      name: string;
+      run_id?: string;
+      configs: Array<{
+        account_id: string;
+        symbol: string;
+        timeframe: string;
+        strategy_id: string;
+        mode: "backtest" | "paper" | "live";
+        params: Record<string, any>;
+        enabled: boolean;
+      }>;
+    }) => {
+      await apiFetch(api.bots.start.path, {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
     },
   });
 }
 
 export function useStopBot() {
   return useMutation({
-    mutationFn: async (payload?: { name?: string }) => {
+    mutationFn: async (payload?: { run_id?: string; name?: string }) => {
       await apiFetch(api.bots.stop.path, {
         method: "POST",
         body: JSON.stringify(payload ?? {}),

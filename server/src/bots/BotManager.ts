@@ -1,4 +1,3 @@
-import { v4 as uuidv4 } from "uuid";
 import { DerivClient } from "../deriv/DerivClient";
 import { getStrategy } from "../strategies";
 import type { StrategyContext } from "../strategies/types";
@@ -6,6 +5,7 @@ import { canOpenTrade, computeStake, getRiskRules } from "../risk/riskEngine";
 import { supabaseAdmin } from "../supabase";
 import type { WsHub } from "../ws/hub";
 import { runBacktest } from "../backtests/runBacktest";
+import { v4 as uuidv4 } from "uuid";
 
 type BotConfig = {
   id: string;
@@ -20,7 +20,7 @@ type BotConfig = {
 
 type Running = {
   userId: string;
-  runId: string; // NEW
+  runId: string;
   name: string;
   state: "stopped" | "running";
   started_at: string | null;
@@ -30,9 +30,9 @@ type Running = {
 };
 
 export class BotManager {
-  private runs = new Map<string, Running>(); // key `${userId}::${runId}`
-  private derivClients = new Map<string, DerivClient>(); // accountId -> client
-  private deriv: DerivClient;
+  private runs = new Map<string, Running>(); // key = `${userId}::${runId}`
+  private deriv!: DerivClient;
+  private derivClients = new Map<string, DerivClient>();
 
   private runKey(userId: string, runId: string) {
     return `${userId}::${runId}`;

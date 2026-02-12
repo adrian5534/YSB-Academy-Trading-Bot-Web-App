@@ -1,5 +1,5 @@
 import express from "express";
-import { api, zRiskRules } from "@ysb/shared/routes";
+import { api } from "@shared/routes";
 import { supabaseAdmin } from "./supabase";
 import { requireUser, type AuthedRequest } from "./middleware/auth";
 import { requireProForPaperLive } from "./middleware/subscription";
@@ -11,6 +11,21 @@ import type { WsHub } from "./ws/hub";
 import { parseCsv, runBacktest } from "./backtests/runBacktest";
 import { requireStripe } from "./stripe/stripe";
 import { env } from "./env";
+import { z } from "zod";
+
+const zRiskRules = z.object({
+  risk_type: z.string().default("fixed"),
+  fixed_stake: z.number().nonnegative().default(1),
+  percent_risk: z.number().min(0).max(100).default(1),
+  max_daily_loss: z.number().min(0).default(0),
+  max_drawdown: z.number().min(0).default(0),
+  max_open_trades: z.number().int().min(0).default(1),
+  adaptive_enabled: z.boolean().default(false),
+  adaptive_min_percent: z.number().min(0).default(0),
+  adaptive_max_percent: z.number().min(0).default(0),
+  adaptive_step: z.number().min(0).default(1),
+  adaptive_lookback: z.number().int().min(0).default(20),
+});
 
 type AnyFn = (req: any, res: any, next: any) => any;
 
@@ -346,13 +361,13 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
     requireProForPaperLive,
     asyncRoute(async (req, res) => {
       const r = req as AuthedRequest;
-      const body = api.bots.start.input.parse(req.body); // extend schema to allow run_id (see shared change below)
-      const runId = (req.body?.run_id as string | undefined) || body.name; // fallback to name if not provided
+      const body = api.bots.start.input.parse(req.body);
+      const runId = (req.body?.run_id as string | undefined) || body.name;
       await botManager.startById(
         r.user.id,
         runId,
         body.name,
-        body.configs.map((c) => ({
+        body.configs.map((c: any) => ({
           account_id: c.account_id,
           symbol: c.symbol,
           timeframe: c.timeframe,
@@ -372,11 +387,8 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
     asyncRoute(async (req, res) => {
       const r = req as AuthedRequest;
       const { run_id, name } = (req.body ?? {}) as { run_id?: string; name?: string };
-      if (typeof run_id === "string" && run_id.trim()) {
-        await botManager.stopById(r.user.id, run_id);
-      } else {
-        await botManager.stop(r.user.id, typeof name === "string" && name.trim() ? name : undefined);
-      }
+      if (run_id && run_id.trim()) await botManager.stopById(r.user.id, run_id);
+      else await botManager.stop(r.user.id, name && name.trim() ? name : undefined);
       res.json({ ok: true });
     }),
   );
