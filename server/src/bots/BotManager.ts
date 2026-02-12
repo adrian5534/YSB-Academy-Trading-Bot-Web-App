@@ -20,6 +20,7 @@ type BotConfig = {
 
 type Running = {
   userId: string;
+  runId: string; // NEW
   name: string;
   state: "stopped" | "running";
   started_at: string | null;
@@ -29,14 +30,12 @@ type Running = {
 };
 
 export class BotManager {
-  // REPLACED: one run per user => many runs per user (keyed by userId::name)
-  // private running = new Map<string, Running>(); // userId -> bot
-  private runs = new Map<string, Running>(); // key `${userId}::${name}`
+  private runs = new Map<string, Running>(); // key `${userId}::${runId}`
   private derivClients = new Map<string, DerivClient>(); // accountId -> client
   private deriv: DerivClient;
 
-  private runKey(userId: string, name: string) {
-    return `${userId}::${name}`;
+  private runKey(userId: string, runId: string) {
+    return `${userId}::${runId}`;
   }
 
   constructor(private hub: WsHub) {
@@ -96,6 +95,7 @@ export class BotManager {
 
     const bot: Running = {
       userId,
+      runId: name,
       name,
       state: "running",
       started_at: new Date().toISOString(),

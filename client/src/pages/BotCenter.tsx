@@ -120,7 +120,9 @@ export default function BotCenter() {
 
   const isPro = sub?.plan === "pro";
 
+  const runIdPrimary = "primary"; // stable id for the first card
   const runNamePrimary = `YSB Bot - ${symbol}-${timeframe}-${strategyId || "none"}`;
+  const runIdOf = (b: any) => String(b.id); // use card id as run_id
   const runNameOf = (b: any) =>
     `YSB Bot - ${b.symbol}-${b.timeframe}-${b.strategy_id || "none"}-${String(b.id || "").slice(-4)}`;
 
@@ -137,8 +139,8 @@ export default function BotCenter() {
       }
       // optional: persist current settings (do not enable)
       await persistSettings({ ...params }, false);
-
       await startBot.mutateAsync({
+        run_id: runIdPrimary, // NEW
         name: runNamePrimary,
         configs: [
           {
@@ -158,10 +160,10 @@ export default function BotCenter() {
     }
   };
 
-  const stopRun = async (name: string) => {
+  const stopRun = async (runId: string) => {
     try {
-      await stopBot.mutateAsync({ name });
-      toast({ title: "Bot stopped", description: name });
+      await stopBot.mutateAsync({ run_id: runId }); // NEW: stop by run_id only
+      toast({ title: "Bot stopped", description: runId });
     } catch (e: any) {
       toast({ title: "Stop failed", description: String(e.message ?? e), variant: "destructive" });
     }
@@ -192,6 +194,7 @@ export default function BotCenter() {
       }).catch(() => void 0);
 
       await startBot.mutateAsync({
+        run_id: runIdOf(b), // NEW
         name: runNameOf(b),
         configs: [
           {
@@ -355,7 +358,7 @@ export default function BotCenter() {
             >
               {status?.state === "running" ? "RESTART" : "START"}
             </button>
-            <button onClick={() => stopRun(runNamePrimary)} className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground">Stop</button>
+            <button onClick={() => stopRun(runIdPrimary)} className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground">Stop</button>
             <div className="ml-auto flex items-center gap-2">
               <select className="rounded-lg border border-border bg-background px-3 py-2 text-sm" value={mode} onChange={(e) => setMode(e.target.value as any)}>
                 <option value="backtest">Backtest</option>
@@ -441,7 +444,7 @@ export default function BotCenter() {
               >
                 {status?.state === "running" ? "RESTART" : "START"}
               </button>
-              <button onClick={() => stopRun(runNameOf(b))} className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground">Stop</button>
+              <button onClick={() => stopRun(runIdOf(b))} className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground">Stop</button>
               <div className="ml-auto flex items-center gap-2">
                 <select
                   className="rounded-lg border border-border bg-background px-3 py-2 text-sm"

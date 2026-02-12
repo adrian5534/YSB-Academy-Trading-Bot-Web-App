@@ -345,12 +345,12 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
     requireUser,
     requireProForPaperLive,
     asyncRoute(async (req, res) => {
-      console.log("[api.bots.start] incoming", { user: (req as any).user?.id, body: req.body?.configs?.[0]?.mode });
       const r = req as AuthedRequest;
-      const body = api.bots.start.input.parse(req.body);
-
-      await botManager.start(
+      const body = api.bots.start.input.parse(req.body); // extend schema to allow run_id (see shared change below)
+      const runId = (req.body?.run_id as string | undefined) || body.name; // fallback to name if not provided
+      await botManager.startById(
         r.user.id,
+        runId,
         body.name,
         body.configs.map((c) => ({
           account_id: c.account_id,
@@ -362,18 +362,21 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
           enabled: c.enabled,
         })),
       );
-
       res.json({ ok: true });
     }),
   );
 
   router.post(
-    api.bots.stop.path, // <<< use the shared path (e.g. /api/bots/stop)
+    api.bots.stop.path,
     requireUser,
     asyncRoute(async (req, res) => {
       const r = req as AuthedRequest;
-      const { name } = (req.body ?? {}) as { name?: string };
-      await botManager.stop(r.user.id, typeof name === "string" && name.trim() ? name : undefined);
+      const { run_id, name } = (req.body ?? {}) as { run_id?: string; name?: string };
+      if (typeof run_id === "string" && run_id.trim()) {
+        await botManager.stopById(r.user.id, run_id);
+      } else {
+        await botManager.stop(r.user.id, typeof name === "string" && name.trim() ? name : undefined);
+      }
       res.json({ ok: true });
     }),
   );

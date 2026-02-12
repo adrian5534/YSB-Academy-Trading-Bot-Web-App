@@ -244,9 +244,28 @@ export const api = {
     settingsForAccount: { path: "/api/strategies/settings/:accountId", responses: { 200: z.array(z.record(z.any())) } },
   },
   bots: {
-    status: { path: "/api/bots/status", responses: { 200: zBotStatus } },
-    start: { path: "/api/bots/start", input: zBotStartReq, responses: { 200: z.object({ ok: z.boolean() }) } },
-    stop: { path: "/api/bots/stop", responses: { 200: z.object({ ok: z.boolean() }) } },
+    start: {
+      path: "/api/bots/start",
+      input: z.object({
+        name: z.string(),
+        run_id: z.string().optional(), // NEW
+        configs: z.array(z.object({
+          account_id: z.string(),
+          symbol: z.string(),
+          timeframe: z.string(),
+          strategy_id: z.string(),
+          mode: z.enum(["backtest", "paper", "live"]),
+          params: z.record(z.any()),
+          enabled: z.boolean(),
+        })),
+      }),
+      responses: { 200: z.object({ ok: z.boolean() }) },
+    },
+    stop: {
+      path: "/api/bots/stop",
+      input: z.object({ run_id: z.string().optional(), name: z.string().optional() }).optional(), // NEW
+      responses: { 200: z.object({ ok: z.boolean() }) },
+    },
   },
   trades: {
     list: { path: "/api/trades", responses: { 200: z.array(zTrade) } },
