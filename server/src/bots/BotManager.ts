@@ -33,9 +33,38 @@ export class BotManager {
   private runs = new Map<string, Running>(); // key = `${userId}::${runId}`
   // Removed global DerivClient; use per-account clients only.
   private derivClients = new Map<string, DerivClient>();
+  // Track open trades per run/config
+  private openCounts = new Map<string, number>();
 
   private runKey(userId: string, runId: string) {
     return `${userId}::${runId}`;
+  }
+
+  private cfgKey(bot: Running, cfg: BotConfig) {
+    return `${bot.userId}::${bot.runId}::${cfg.id}`;
+  }
+
+  private getOpenCount(bot: Running, cfg: BotConfig) {
+    return this.openCounts.get(this.cfgKey(bot, cfg)) ?? 0;
+  }
+
+  private incOpen(bot: Running, cfg: BotConfig) {
+    const k = this.cfgKey(bot, cfg);
+    this.openCounts.set(k, (this.openCounts.get(k) ?? 0) + 1);
+  }
+
+  private decOpen(bot: Running, cfg: BotConfig) {
+    const k = this.cfgKey(bot, cfg);
+    const v = (this.openCounts.get(k) ?? 0) - 1;
+    if (v <= 0) this.openCounts.delete(k);
+    else this.openCounts.set(k, v);
+  }
+
+  private clearRunOpenCounts(userId: string, runId: string) {
+    const prefix = `${userId}::${runId}::`;
+    for (const k of Array.from(this.openCounts.keys())) {
+      if (k.startsWith(prefix)) this.openCounts.delete(k);
+    }
   }
 
   constructor(private hub: WsHub) {
@@ -107,6 +136,7 @@ export class BotManager {
     const bot = this.runs.get(key);
     if (bot?.timer) clearInterval(bot.timer);
     this.runs.delete(key);
+    this.clearRunOpenCounts(userId, name);
     this.hub.log("bot stopped", { userId, runId: name });
     this.hub.status(this.getStatus(userId));
   }
@@ -117,6 +147,7 @@ export class BotManager {
     const bot = this.runs.get(key);
     if (bot?.timer) clearInterval(bot.timer);
     this.runs.delete(key);
+    this.clearRunOpenCounts(userId, runId);
     this.hub.log("bot stopped", { userId, runId });
     this.hub.status(this.getStatus(userId));
   }
@@ -303,6 +334,20 @@ export class BotManager {
     if (!signal.side) return;
     if (signal.confidence < 0.5) return;
 
+    // Enforce per-bot max open trades
+    const maxOpenTrades = Math.max(1, Number(cfg.params?.max_open_trades ?? 5));
+    const currentOpen = this.getOpenCount(bot, cfg);
+    if (currentOpen >= maxOpenTrades) {
+      this.hub.log("open-trade limit reached", {
+        runId: bot.runId,
+        cfg_id: cfg.id,
+        symbol: cfg.symbol,
+        limit: maxOpenTrades,
+        current: currentOpen,
+      });
+      return;
+    }
+
     const gate = await canOpenTrade(bot.userId);
     if (!gate.ok) {
       this.hub.log("risk block", { reason: gate.reason, symbol: cfg.symbol });
@@ -313,14 +358,24 @@ export class BotManager {
     const stake = computeStake(rules, 1000);
 
     if (cfg.mode === "paper") {
-      await this.paperTrade(bot.userId, cfg, signal, stake);
+      // Paper trades in this implementation close immediately; we still bump the counter
+      // for consistency and release right after persisting.
+      this.incOpen(bot, cfg);
+      try {
+        await this.paperTrade(bot.userId, cfg, signal, stake);
+      } finally {
+        this.decOpen(bot, cfg);
+      }
     } else if (cfg.mode === "live") {
       this.hub.log("live mode requested (minimal implementation)", { symbol: cfg.symbol });
+      const contractType = signal.side === "buy" ? "CALL" : "PUT";
+      const stakeParam = Number(cfg.params?.stake ?? stake);
+      const dur = Number(cfg.params?.duration ?? 5);
+      const durUnit = (cfg.params?.duration_unit ?? "m") as "m" | "h" | "d" | "t";
+
+      // Reserve a slot and auto-release after expiry
+      this.incOpen(bot, cfg);
       try {
-        const contractType = signal.side === "buy" ? "CALL" : "PUT";
-        const stakeParam = Number(cfg.params?.stake ?? stake);
-        const dur = Number(cfg.params?.duration ?? 5);
-        const durUnit = (cfg.params?.duration_unit ?? "m") as "m" | "h" | "d" | "t";
         const res = await deriv.buyRiseFall({
           symbol: cfg.symbol,
           side: contractType,
@@ -330,7 +385,14 @@ export class BotManager {
           currency: "USD",
         });
         this.hub.trade({ mode: "live", symbol: cfg.symbol, res });
+
+        const ms = durationToMs(dur, durUnit);
+        setTimeout(() => {
+          this.decOpen(bot, cfg);
+        }, ms);
       } catch (e) {
+        // Release slot on failure
+        this.decOpen(bot, cfg);
         this.hub.log("live buy error", { error: String(e) });
       }
     }
@@ -423,6 +485,22 @@ export class BotManager {
         console.debug("tick payload (final):", JSON.stringify(tick));
       } catch {}
     }
+  }
+}
+
+function durationToMs(n: number, u: "m" | "h" | "d" | "t"): number {
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  switch (u) {
+    case "t": // ticks: approximate as 1s per tick for release purposes
+      return n * 1000;
+    case "m":
+      return n * 60_000;
+    case "h":
+      return n * 3_600_000;
+    case "d":
+      return n * 86_400_000;
+    default:
+      return 0;
   }
 }
 

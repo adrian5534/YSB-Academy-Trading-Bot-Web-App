@@ -42,6 +42,7 @@ export default function BotCenter() {
     stake: 250,
     duration: 5,
     duration_unit: "m" as "m" | "h" | "d" | "t",
+    max_open_trades: 5,
   });
   const [showSettings, setShowSettings] = usePersistedState<boolean>("bot:showSettings", false);
 
@@ -99,11 +100,12 @@ export default function BotCenter() {
         // merge defaults when strategy changes (preserve execution fields)
         if (patch.strategy_id && patch.strategy_id !== b.strategy_id) {
           const defaults = getStrategyDefaults(patch.strategy_id);
-          const execKeys = new Set(["stake", "duration", "duration_unit"]);
+          const execKeys = new Set(["stake", "duration", "duration_unit", "max_open_trades"]);
           const exec = {
             stake: Number(b.params?.stake ?? 250),
             duration: Number(b.params?.duration ?? 5),
             duration_unit: (b.params?.duration_unit as any) ?? computeExecUnit(b.timeframe),
+            max_open_trades: Number(b.params?.max_open_trades ?? 5),
           };
           const nextParams: Record<string, any> = {
             ...defaults,
@@ -232,10 +234,17 @@ export default function BotCenter() {
   // merge defaults for selected strategy; clear fields from previous strategy (primary)
   useEffect(() => {
     setParams((p) => {
-      const exec = { stake: p.stake ?? 250, duration: p.duration ?? 5, duration_unit: p.duration_unit ?? (timeframe === "1s" ? "t" : "m") } as any;
+      const exec = {
+        stake: p.stake ?? 250,
+        duration: p.duration ?? 5,
+        duration_unit: p.duration_unit ?? (timeframe === "1s" ? "t" : "m"),
+        max_open_trades: p.max_open_trades ?? 5,
+      } as any;
       if (!strategyId) return exec;
       const defaults = getStrategyDefaults(strategyId);
-      const allowedKeys = new Set(Object.keys(defaults).concat(EXECUTION_FIELDS.map((f) => f.key)));
+      const allowedKeys = new Set(
+        Object.keys(defaults).concat(EXECUTION_FIELDS.map((f) => f.key)).concat(["max_open_trades"])
+      );
       const next: Record<string, any> = {};
       for (const k of Object.keys(p)) if (allowedKeys.has(k)) next[k] = (p as any)[k];
       return { ...defaults, ...exec, ...next };
@@ -565,7 +574,7 @@ export default function BotCenter() {
 }
 
 function StrategySettingsModal({ params, onSave, onClose, fields }: {
-  params: { stake: number; duration: number; duration_unit: "m"|"h"|"d"|"t"; [k: string]: any };
+  params: { stake: number; duration: number; duration_unit: "m"|"h"|"d"|"t"; max_open_trades?: number; [k: string]: any };
   fields: { key: string; label: string; type: "number"|"select"|"boolean"|"text"; min?: number; max?: number; step?: number; options?: string[]; default?: string | number | boolean }[];
    onSave: (p: any) => void;
    onClose: () => void;
@@ -633,6 +642,17 @@ function StrategySettingsModal({ params, onSave, onClose, fields }: {
                  <option value="d">Days</option>
                </select>
              </div>
+           </div>
+
+           <div>
+             <label className="block text-sm mb-1">Max open trades</label>
+             <input
+               type="number"
+               min={1}
+               className="w-full rounded-lg border border-border bg-background px-3 py-2"
+               value={Number(form.max_open_trades ?? 5)}
+               onChange={(e) => setForm({ ...form, max_open_trades: Math.max(1, Number(e.target.value)) })}
+             />
            </div>
          </div>
 
