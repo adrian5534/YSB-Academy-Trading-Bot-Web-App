@@ -228,54 +228,8 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
     }),
   );
 
-// POST alias for hosts that block PUT
-  router.post(
-    "/api/accounts/:id/rename",
-    requireUser,
-    asyncRoute(async (req, res) => {
-      const r = req as AuthedRequest;
-      const id = String(req.params.id);
-      const body = zRename.parse(req.body);
-
-      const { data, error } = await supabaseAdmin
-        .from("accounts")
-        .update({ label: body.label })
-        .eq("id", id)
-        .eq("user_id", r.user.id)
-        .select("id")
-        .maybeSingle();
-      if (error) throw error;
-      if (!data) return res.status(404).json({ error: "not_found" });
-      res.json({ ok: true });
-    }),
-  );
-
   const zDerivUpdate = z.object({ token: z.string().min(1) });
   router.put(
-    "/api/accounts/:id/deriv",
-    requireUser,
-    asyncRoute(async (req, res) => {
-      const r = req as AuthedRequest;
-      const id = String(req.params.id);
-      const body = zDerivUpdate.parse(req.body);
-
-      const { data: acc } = await supabaseAdmin.from("accounts").select("id,type,user_id").eq("id", id).eq("user_id", r.user.id).maybeSingle();
-      if (!acc || acc.type !== "deriv") return res.status(400).json({ error: "invalid_account_type" });
-
-      const c = new DerivClient();
-      const info = await c.validateToken(body.token).catch((e: any) => {
-        throw new Error(String(e?.Message ?? e));
-      });
-      const enc = encryptJson({ token: body.token, validated_at: new Date().toISOString(), ...info });
-
-      const { error } = await supabaseAdmin.from("accounts").update({ secrets: { deriv_token_enc: enc } }).eq("id", id).eq("user_id", r.user.id);
-      if (error) throw error;
-      res.json({ ok: true });
-    }),
-  );
-
-// POST alias for hosts that block PUT
-  router.post(
     "/api/accounts/:id/deriv",
     requireUser,
     asyncRoute(async (req, res) => {
@@ -321,25 +275,6 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
     }),
   );
 
-// POST alias for hosts that block PUT
-  router.post(
-    "/api/accounts/:id/mt5",
-    requireUser,
-    asyncRoute(async (req, res) => {
-      const r = req as AuthedRequest;
-      const id = String(req.params.id);
-      const body = zMt5Update.parse(req.body);
-
-      const { data: acc } = await supabaseAdmin.from("accounts").select("id,type,user_id").eq("id", id).eq("user_id", r.user.id).maybeSingle();
-      if (!acc || acc.type !== "mt5") return res.status(400).json({ error: "invalid_account_type" });
-
-      const enc = encryptJson({ server: body.server, login: body.login, password: body.password });
-      const { error } = await supabaseAdmin.from("accounts").update({ secrets: { mt5_enc: enc } }).eq("id", id).eq("user_id", r.user.id);
-      if (error) throw error;
-      res.json({ ok: true });
-    }),
-  );
-
   router.delete(
     "/api/accounts/:id",
     requireUser,
@@ -347,19 +282,6 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
       const r = req as AuthedRequest;
       const id = String(req.params.id);
 
-      const { error } = await supabaseAdmin.from("accounts").delete().eq("id", id).eq("user_id", r.user.id);
-      if (error) throw error;
-      res.json({ ok: true });
-    }),
-  );
-
-// POST alias for hosts that block DELETE
-  router.post(
-    "/api/accounts/:id/delete",
-    requireUser,
-    asyncRoute(async (req, res) => {
-      const r = req as AuthedRequest;
-      const id = String(req.params.id);
       const { error } = await supabaseAdmin.from("accounts").delete().eq("id", id).eq("user_id", r.user.id);
       if (error) throw error;
       res.json({ ok: true });
