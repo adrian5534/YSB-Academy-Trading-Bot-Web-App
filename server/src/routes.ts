@@ -5,8 +5,7 @@ import { requireUser, type AuthedRequest } from "./middleware/auth";
 import { requireProForPaperLive } from "./middleware/subscription";
 import { DerivClient } from "./deriv/DerivClient";
 import { encryptJson } from "./crypto/secrets";
-import { strategies } from "./strategies";
-import { BotManager } from "./bots/BotManager";
+import { strategies } from "./bots/BotManager";
 import type { WsHub } from "./ws/hub";
 import { parseCsv, runBacktest } from "./backtests/runBacktest";
 import { requireStripe } from "./stripe/stripe";
@@ -53,7 +52,6 @@ function getOrigin(req: any) {
 
 export function registerRoutes(app: express.Express, hub: WsHub) {
   const router = express.Router();
-  const botManager = new BotManager(hub);
 
   // Health check (Render can ping this)
   router.get("/api/health", (_req, res) => res.json({ ok: true }));
@@ -219,23 +217,27 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
   router.get(
     api.instruments.list.path,
     requireUser,
-    asyncRoute(async (req, res) => {
+    asyncRoute(async (_req, res) => {
       res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
       res.set("Pragma", "no-cache");
       res.set("Expires", "0");
 
-      const c = new DerivClient();
-      const symbols = await c.activeSymbols();
-      const mapped = symbols.map((s: any) => ({
-        symbol: s.symbol,
-        display_name: s.display_name,
-        market: s.market,
-        market_display_name: s.market_display_name,
-        subgroup: s.subgroup,
-        subgroup_display_name: s.subgroup_display_name,
-        exchange_is_open: Boolean(s.exchange_is_open),
+      const c = new DerivClient(); // no token needed for active_symbols
+      await c.connect();
+      const arr = await c.activeSymbols("brief").catch(() => []);
+      await c.disconnect().catch(() => void 0);
+
+      // Return a trimmed shape
+      const out = (arr as any[]).map((x) => ({
+        symbol: x.symbol,
+        display_name: x.display_name,
+        market: x.market,
+        market_display_name: x.market_display_name,
+        submarket: x.submarket,
+        submarket_display_name: x.submarket_display_name,
+        subgroup_display_name: (x as any).subgroup_display_name ?? null,
       }));
-      res.json(api.instruments.list.responses[200].parse(mapped));
+      res.json(out);
     }),
   );
 

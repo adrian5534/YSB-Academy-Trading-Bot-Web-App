@@ -347,7 +347,6 @@ export class DerivClient {
     );
     if (res?.error) throw new Error(res.error.message || "Deriv active_symbols error");
     const arr = res?.active_symbols;
-    if (!Array.isArray(arr)) return [];
-    return arr;
+    return Array.isArray(arr) ? arr : [];
   }
 }
