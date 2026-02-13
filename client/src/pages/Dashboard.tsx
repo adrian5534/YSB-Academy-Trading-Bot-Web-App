@@ -16,9 +16,28 @@ export default function Dashboard() {
   const { data: bot } = useBotStatus();
   const { data: accounts } = useAccounts();
 
-  // Live balances via apiFetch (keeps cookies/auth)
-  const { useAccountBalances } = await import("@/hooks/use-account-balances").catch(() => ({ useAccountBalances: undefined as any }));
-  const { data: acctBalances } = useAccountBalances ? useAccountBalances() : { data: [] as any[] };
+  // Live balances (poll API; keep cookies/auth)
+  const [acctBalances, setAcctBalances] = useState<any[] | null>(null);
+  useEffect(() => {
+    let alive = true;
+    let timer: any;
+    const load = async () => {
+      try {
+        const r = await fetch("/api/accounts/balances", { credentials: "include" });
+        if (!r.ok) return;
+        const data = await r.json().catch(() => null);
+        if (alive) setAcctBalances(Array.isArray(data) ? data : null);
+      } catch {
+        /* ignore */
+      }
+    };
+    load();
+    timer = setInterval(load, 15000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, []);
 
   // Persisted filter: mode
   const [mode, setMode] = useState<ModeFilter>(() => {
