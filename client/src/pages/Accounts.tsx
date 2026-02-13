@@ -118,7 +118,10 @@ export default function Accounts() {
   const removeAccount = async (id: string) => {
     try {
       if (!confirm("Remove this account?")) return;
-      const r = await fetch(`/api/accounts/${id}`, { method: "DELETE" });
+      let r = await fetch(`/api/accounts/${id}`, { method: "DELETE" });
+      if (r.status === 405) {
+        r = await fetch(`/api/accounts/${id}/delete`, { method: "POST" });
+      }
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error ?? "Delete failed");
       toast({ title: "Removed", description: "Account deleted." });
       await qc.invalidateQueries({ queryKey: ["accounts"] });
