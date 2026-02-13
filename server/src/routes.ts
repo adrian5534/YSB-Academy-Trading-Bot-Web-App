@@ -5,7 +5,8 @@ import { requireUser, type AuthedRequest } from "./middleware/auth";
 import { requireProForPaperLive } from "./middleware/subscription";
 import { DerivClient } from "./deriv/DerivClient";
 import { encryptJson } from "./crypto/secrets";
-import { BotManager, strategies } from "./bots/BotManager";
+import { strategies } from "./strategies";
+import { BotManager } from "./bots/BotManager";
 import type { WsHub } from "./ws/hub";
 import { parseCsv, runBacktest } from "./backtests/runBacktest";
 import { requireStripe } from "./stripe/stripe";
@@ -219,25 +220,18 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
     api.instruments.list.path,
     requireUser,
     asyncRoute(async (_req, res) => {
-      res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
-      res.set("Pragma", "no-cache");
-      res.set("Expires", "0");
-
-      const c = new DerivClient(); // no token needed for active_symbols
-      await c.connect();
-      const arr = await c.activeSymbols("brief").catch(() => []);
-      await c.disconnect().catch(() => void 0);
-
-      const out = (arr as any[]).map((x) => ({
-        symbol: x.symbol,
-        display_name: x.display_name,
-        market: x.market,
-        market_display_name: x.market_display_name,
-        submarket: x.submarket,
-        submarket_display_name: x.submarket_display_name,
-        subgroup_display_name: (x as any).subgroup_display_name ?? null,
+      const c = new DerivClient();
+      const symbols = await c.activeSymbols();
+      const mapped = symbols.map((s: any) => ({
+        symbol: s.symbol,
+        display_name: s.display_name,
+        market: s.market,
+        market_display_name: s.market_display_name,
+        subgroup: s.subgroup,
+        subgroup_display_name: s.subgroup_display_name,
+        exchange_is_open: Boolean(s.exchange_is_open),
       }));
-      res.json(out);
+      res.json(api.instruments.list.responses[200].parse(mapped));
     }),
   );
 
@@ -404,15 +398,12 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
     requireUser,
     asyncRoute(async (req, res) => {
       const r = req as AuthedRequest;
-      const mode = String(req.query.mode ?? "").toLowerCase();
-      const accountId = req.query.account_id ? String(req.query.account_id) : null;
-
-      let q = supabaseAdmin.from("trades").select("*").eq("user_id", r.user.id);
-
-      if (mode && ["paper", "live", "backtest"].includes(mode)) q = q.eq("mode", mode);
-      if (accountId) q = q.eq("account_id", accountId);
-
-      const { data, error } = await q.order("opened_at", { ascending: false }).limit(200);
+      const { data, error } = await supabaseAdmin
+        .from("trades")
+        .select("*")
+        .eq("user_id", r.user.id)
+        .order("opened_at", { ascending: false })
+        .limit(200);
       if (error) throw error;
       res.json(api.trades.list.responses[200].parse(data));
     }),
@@ -423,14 +414,7 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
     requireUser,
     asyncRoute(async (req, res) => {
       const r = req as AuthedRequest;
-      const mode = String(req.query.mode ?? "").toLowerCase();
-      const accountId = req.query.account_id ? String(req.query.account_id) : null;
-
-      let q = supabaseAdmin.from("trades").select("profit,opened_at").eq("user_id", r.user.id);
-      if (mode && ["paper", "live", "backtest"].includes(mode)) q = q.eq("mode", mode);
-      if (accountId) q = q.eq("account_id", accountId);
-
-      const { data, error } = await q;
+      const { data, error } = await supabaseAdmin.from("trades").select("profit,opened_at").eq("user_id", r.user.id);
       if (error) throw error;
 
       const profits = (data ?? []).map((t: any) => Number(t.profit ?? 0));
@@ -444,10 +428,9 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
       const grossLoss = Math.abs(losses.reduce((a: number, b: number) => a + b, 0));
       const profitFactor = grossLoss === 0 ? (grossWin > 0 ? 99 : 0) : grossWin / grossLoss;
 
-      // simple max drawdown over sequence
-      let eq = 0,
-        peak = 0,
-        dd = 0;
+      let eq = 0;
+      let peak = 0;
+      let dd = 0;
       for (const p of profits.slice().reverse()) {
         eq += p;
         peak = Math.max(peak, eq);
@@ -605,6 +588,7 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
     requireUser,
     asyncRoute(async (req, res) => {
       const r = req as AuthedRequest;
+      // Parse only known fields; accept optional plan from raw body
       const body = api.stripe.createCheckout.input.parse({ return_url: req.body?.return_url });
       const stripe = requireStripe();
 
@@ -691,57 +675,6 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
       const logs = await supabaseAdmin.from("logs").select("*").order("created_at", { ascending: false }).limit(50);
 
       res.json({ users: users.data, subscriptions: subs.data, logs: logs.data });
-    }),
-  );
-
-  // Accounts with live balances (Deriv only for now)
-  router.get(
-    "/api/accounts/balances",
-    requireUser,
-    asyncRoute(async (req, res) => {
-      const r = req as AuthedRequest;
-
-      const { data: rows, error } = await supabaseAdmin
-        .from("accounts")
-        .select("id,type,label,secrets")
-        .eq("user_id", r.user.id)
-        .order("created_at", { ascending: false });
-
-      if (error) throw error;
-
-      const out: Array<{ id: string; type: string; label: string | null; balance: number | null; currency?: string }> = [];
-
-      for (const a of rows ?? []) {
-        let balance: number | null = null;
-        let currency: string | undefined;
-
-        if (a.type === "deriv") {
-          try {
-            const enc = (a.secrets as any)?.deriv_token_enc;
-            if (enc) {
-              const { decryptJson } = await import("./crypto/secrets");
-              const dec: any = decryptJson(enc);
-              const token = String(dec?.token ?? "");
-              if (token) {
-                const c = new DerivClient(token);
-                await c.connect();
-                const b = await c.getBalance().catch(() => null);
-                await c.disconnect().catch(() => void 0);
-                if (b) {
-                  balance = Number(b.balance);
-                  currency = b.currency;
-                }
-              }
-            }
-          } catch {
-            // ignore per-account balance errors
-          }
-        }
-
-        out.push({ id: a.id, type: a.type, label: a.label, balance, currency });
-      }
-
-      res.json(out);
     }),
   );
 
