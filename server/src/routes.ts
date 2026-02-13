@@ -220,9 +220,16 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
     api.instruments.list.path,
     requireUser,
     asyncRoute(async (_req, res) => {
+      res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+      res.set("Pragma", "no-cache");
+      res.set("Expires", "0");
+
       const c = new DerivClient();
-      const symbols = await c.activeSymbols();
-      const mapped = symbols.map((s: any) => ({
+      await c.connect().catch(() => void 0);
+      const symbols = await c.activeSymbols("brief").catch(() => []);
+      await c.disconnect().catch(() => void 0);
+
+      const mapped = (symbols as any[]).map((s: any) => ({
         symbol: s.symbol,
         display_name: s.display_name,
         market: s.market,
@@ -588,7 +595,6 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
     requireUser,
     asyncRoute(async (req, res) => {
       const r = req as AuthedRequest;
-      // Parse only known fields; accept optional plan from raw body
       const body = api.stripe.createCheckout.input.parse({ return_url: req.body?.return_url });
       const stripe = requireStripe();
 
