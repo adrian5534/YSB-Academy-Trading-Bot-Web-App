@@ -16,28 +16,9 @@ export default function Dashboard() {
   const { data: bot } = useBotStatus();
   const { data: accounts } = useAccounts();
 
-  // Live balances without SWR
-  const [acctBalances, setAcctBalances] = useState<any[] | null>(null);
-  useEffect(() => {
-    let alive = true;
-    let timer: any;
-    const load = async () => {
-      try {
-        const r = await fetch("/api/accounts/balances", { credentials: "include" });
-        if (!r.ok) return;
-        const data = await r.json().catch(() => null);
-        if (alive) setAcctBalances(Array.isArray(data) ? data : null);
-      } catch {
-        /* ignore */
-      }
-    };
-    load();
-    timer = setInterval(load, 15000);
-    return () => {
-      alive = false;
-      clearInterval(timer);
-    };
-  }, []);
+  // Live balances via apiFetch (keeps cookies/auth)
+  const { useAccountBalances } = await import("@/hooks/use-account-balances").catch(() => ({ useAccountBalances: undefined as any }));
+  const { data: acctBalances } = useAccountBalances ? useAccountBalances() : { data: [] as any[] };
 
   // Persisted filter: mode
   const [mode, setMode] = useState<ModeFilter>(() => {
@@ -124,6 +105,12 @@ export default function Dashboard() {
   // Account balance (filtered by selected account) – prefer live balances
   const accountBalance = useMemo(() => {
     const bals = (acctBalances as any[]) ?? [];
+    const allAccounts = (accounts as any[]) ?? [];
+
+    const selected =
+      accountId === "all" ? null : allAccounts.find((a) => a.id === accountId) || null;
+    const selectedType = selected?.type as string | undefined;
+
     if (bals.length) {
       if (accountId === "all") {
         const total = bals.reduce((s, a) => s + (Number.isFinite(Number(a.balance)) ? Number(a.balance) : 0), 0);
@@ -131,8 +118,14 @@ export default function Dashboard() {
       }
       const row = bals.find((a) => a.id === accountId);
       if (row && typeof row.balance === "number") {
-        return { value: row.balance, label: `Balance • ${row.label ?? "Account"}` };
+        return { value: row.balance, label: `Balance • ${row.label ?? "Account"}${row.currency ? ` (${row.currency})` : ""}` };
       }
+      // If selected is non-Deriv, we don't have live balance
+      if (selectedType && selectedType !== "deriv") {
+        return { value: null, label: "Balance (Not available for this account type)" };
+      }
+      // Deriv selected but no balance -> likely invalid token or auth issue
+      return { value: null, label: "Balance (Reconnect Deriv token or refresh)" };
     }
 
     // Fallbacks (no balances yet)
@@ -141,7 +134,7 @@ export default function Dashboard() {
       return { value: base + totalProfit, label: accountId === "all" ? "Paper Balance (All)" : "Paper Balance" };
     }
     return { value: null, label: "Account Balance" };
-  }, [acctBalances, accountId, mode, totalProfit]);
+  }, [acctBalances, accounts, accountId, mode, totalProfit]);
 
   const profitTrend = totalProfit >= 0 ? "up" : "down";
   const profitColor = totalProfit >= 0 ? "text-green-500" : "text-red-500";
