@@ -10,18 +10,35 @@ export function useInstruments() {
     const load = async () => {
       setLoading(true);
       try {
-        const r = await fetch("/api/instruments/list", { credentials: "include" });
+        const r = await fetch("/api/instruments/list", {
+          credentials: "include",
+          cache: "no-store",
+          headers: { "Cache-Control": "no-cache" },
+        });
+        if (r.status === 304) {
+          // Not modified: keep existing data
+          if (alive) setError(null);
+          return;
+        }
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const j = await r.json();
-        if (alive) { setData(Array.isArray(j) ? j : []); setError(null); }
+        if (alive) {
+          setData(Array.isArray(j) ? j : []);
+          setError(null);
+        }
       } catch (e: any) {
-        if (alive) { setError(String(e?.message || e)); setData([]); }
+        if (alive) {
+          setError(String(e?.message || e));
+          // keep previous data on error to avoid blanking UI
+        }
       } finally {
         if (alive) setLoading(false);
       }
     };
     load();
-    return () => { alive = false; };
+    return () => {
+      alive = false;
+    };
   }, []);
 
   return { data: data ?? [], isLoading, error };

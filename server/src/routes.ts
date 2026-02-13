@@ -219,7 +219,11 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
   router.get(
     api.instruments.list.path,
     requireUser,
-    asyncRoute(async (_req, res) => {
+    asyncRoute(async (req, res) => {
+      res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+      res.set("Pragma", "no-cache");
+      res.set("Expires", "0");
+
       const c = new DerivClient();
       const symbols = await c.activeSymbols();
       const mapped = symbols.map((s: any) => ({
