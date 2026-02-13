@@ -137,10 +137,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         >
           Sign out everywhere
         </button>
-
-        <div className="mt-6 text-xs text-muted-foreground">
-          Brand: <span className="text-ysbPurple">#6F2898</span> / <span className="text-ysbYellow">#f3ec4e</span>
-        </div>
       </aside>
 
       <main className="p-6">{children}</main>
