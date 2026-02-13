@@ -216,31 +216,32 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
   );
 
   // ===== Instruments =====
-  router.get(
-    api.instruments.list.path,
-    requireUser,
-    asyncRoute(async (_req, res) => {
-      res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
-      res.set("Pragma", "no-cache");
-      res.set("Expires", "0");
+  const listInstruments = asyncRoute(async (_req, res) => {
+    res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+    res.set("Pragma", "no-cache");
+    res.set("Expires", "0");
 
-      const c = new DerivClient();
-      await c.connect().catch(() => void 0);
-      const symbols = await c.activeSymbols("brief").catch(() => []);
-      await c.disconnect().catch(() => void 0);
+    const c = new DerivClient();
+    await c.connect().catch(() => void 0);
+    const symbols = await c.activeSymbols("brief").catch(() => []);
+    await c.disconnect().catch(() => void 0);
 
-      const mapped = (symbols as any[]).map((s: any) => ({
-        symbol: s.symbol,
-        display_name: s.display_name,
-        market: s.market,
-        market_display_name: s.market_display_name,
-        subgroup: s.subgroup,
-        subgroup_display_name: s.subgroup_display_name,
-        exchange_is_open: Boolean(s.exchange_is_open),
-      }));
-      res.json(api.instruments.list.responses[200].parse(mapped));
-    }),
-  );
+    const mapped = (symbols as any[]).map((s: any) => ({
+      symbol: s.symbol,
+      display_name: s.display_name,
+      market: s.market,
+      market_display_name: s.market_display_name,
+      subgroup: s.subgroup,
+      subgroup_display_name: s.subgroup_display_name,
+      exchange_is_open: Boolean(s.exchange_is_open),
+    }));
+    res.json(api.instruments.list.responses[200].parse(mapped));
+  });
+
+  // Shared route
+  router.get(api.instruments.list.path, requireUser, listInstruments);
+  // Alias used by client
+  router.get("/api/instruments/list", requireUser, listInstruments);
 
   router.get(
     api.instruments.enabledForAccount.path,
@@ -684,6 +685,7 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
     }),
   );
 
+  // Mount router and return
   app.use(router);
   return { botManager };
 }
