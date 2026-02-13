@@ -4,7 +4,7 @@ import { supabaseAdmin } from "./supabase";
 import { requireUser, type AuthedRequest } from "./middleware/auth";
 import { requireProForPaperLive } from "./middleware/subscription";
 import { DerivClient } from "./deriv/DerivClient";
-import { encryptJson } from "./crypto/secrets";
+import { encryptJson, decryptJson } from "./crypto/secrets";
 import { strategies } from "./strategies";
 import { BotManager } from "./bots/BotManager";
 import type { WsHub } from "./ws/hub";
@@ -112,18 +112,93 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
   );
 
   // ===== Accounts =====
+  const listAccounts = asyncRoute(async (req, res) => {
+    res.set("Cache-Control", "no-store");
+    const r = req as AuthedRequest;
+    const { data, error } = await supabaseAdmin
+      .from("accounts")
+      .select("id,user_id,type,label,status,created_at")
+      .eq("user_id", r.user.id)
+      .order("created_at", { ascending: false });
+    if (error) throw error;
+    res.json(api.accounts.list.responses[200].parse(data));
+  });
+  // Shared path
+  router.get(api.accounts.list.path, requireUser, listAccounts);
+  // Alias used by some clients
+  router.get("/api/accounts/list", requireUser, listAccounts);
+
+  // Aggregated balances per account
   router.get(
-    api.accounts.list.path,
+    "/api/accounts/balances",
     requireUser,
     asyncRoute(async (req, res) => {
+      res.set("Cache-Control", "no-store");
       const r = req as AuthedRequest;
-      const { data, error } = await supabaseAdmin
+
+      const { data: accounts, error } = await supabaseAdmin
         .from("accounts")
-        .select("id,user_id,type,label,status,created_at")
+        .select("id,type,secrets,label,status")
         .eq("user_id", r.user.id)
-        .order("created_at", { ascending: false });
+        .eq("status", "active");
       if (error) throw error;
-      res.json(api.accounts.list.responses[200].parse(data));
+
+      const out: Array<{ account_id: string; type: string; balance: number | null; currency: string | null }> = [];
+
+      // Deriv balances
+      async function fetchDerivBalance(token: string) {
+        // validateToken typically authorizes and returns balance/currency
+        const c = new DerivClient();
+        try {
+          const info = await c.validateToken(token);
+          const bal = typeof (info as any)?.balance === "number" ? (info as any).balance : Number((info as any)?.balance ?? NaN);
+          const cur = (info as any)?.currency ?? null;
+          return { balance: Number.isFinite(bal) ? bal : null, currency: cur };
+        } catch {
+          return { balance: null, currency: null };
+        }
+      }
+
+      // MT5 balances via worker
+      async function fetchMt5Balance(creds: { server: string; login: string; password: string }) {
+        if (!env.MT5_WORKER_URL) return { balance: null, currency: null };
+        try {
+          const r = await fetch(env.MT5_WORKER_URL.replace(/\/$/, "") + "/mt5/balance", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "x-api-key": env.MT5_WORKER_API_KEY ?? "" },
+            body: JSON.stringify(creds),
+          });
+          const j = (await r.json().catch(() => ({}))) as any;
+          const bal = typeof j?.balance === "number" ? j.balance : Number(j?.balance ?? NaN);
+          const cur = j?.currency ?? null;
+          return { balance: Number.isFinite(bal) ? bal : null, currency: cur };
+        } catch {
+          return { balance: null, currency: null };
+        }
+      }
+
+      for (const acc of accounts ?? []) {
+        if (acc.type === "deriv") {
+          const derivEnc = (acc as any)?.secrets?.deriv_token_enc;
+          const dec = derivEnc ? (decryptJson(derivEnc) as any) : null;
+          const token = dec?.token as string | undefined;
+          const { balance, currency } = token ? await fetchDerivBalance(token) : { balance: null, currency: null };
+          out.push({ account_id: acc.id, type: acc.type, balance, currency });
+        } else if (acc.type === "mt5") {
+          const mt5Enc = (acc as any)?.secrets?.mt5_enc;
+          const dec = mt5Enc ? (decryptJson(mt5Enc) as any) : null;
+          const creds =
+            dec && dec.server && dec.login && dec.password
+              ? { server: String(dec.server), login: String(dec.login), password: String(dec.password) }
+              : null;
+          const { balance, currency } = creds ? await fetchMt5Balance(creds) : { balance: null, currency: null };
+          out.push({ account_id: acc.id, type: acc.type, balance, currency });
+        } else {
+          out.push({ account_id: acc.id, type: acc.type, balance: null, currency: null });
+        }
+      }
+
+      res.json(out);
     }),
   );
 
@@ -685,7 +760,6 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
     }),
   );
 
-  // Mount router and return
   app.use(router);
   return { botManager };
 }
