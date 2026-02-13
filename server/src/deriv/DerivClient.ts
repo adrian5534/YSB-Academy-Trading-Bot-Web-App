@@ -338,4 +338,16 @@ export class DerivClient {
     const bal = Number(res?.balance?.balance ?? res?.balance?.amount ?? NaN);
     return { balance: Number.isFinite(bal) ? bal : 0, currency: res?.balance?.currency };
   }
+
+  // List active symbols
+  async activeSymbols(kind: "brief" | "full" = "brief") {
+    const res = await this.sendWithRetry<any>(
+      { active_symbols: kind, product_type: "basic" },
+      { timeoutMs: 20_000, retries: 2, retryDelayMs: 600, safeToRetry: true }
+    );
+    if (res?.error) throw new Error(res.error.message || "Deriv active_symbols error");
+    const arr = res?.active_symbols;
+    if (!Array.isArray(arr)) return [];
+    return arr;
+  }
 }
