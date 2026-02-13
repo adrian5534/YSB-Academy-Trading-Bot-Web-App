@@ -7,6 +7,7 @@ import { useTrades } from "@/hooks/use-trades";
 import { useBotStatus } from "@/hooks/use-bots";
 import { useEffect, useMemo, useState } from "react";
 import { useAccounts } from "@/hooks/use-accounts";
+import { useAccountBalances } from "@/hooks/use-account-balances";
 
 type ModeFilter = "all" | "paper" | "live" | "backtest";
 
@@ -16,28 +17,8 @@ export default function Dashboard() {
   const { data: bot } = useBotStatus();
   const { data: accounts } = useAccounts();
 
-  // Live balances (poll API; keep cookies/auth)
-  const [acctBalances, setAcctBalances] = useState<any[] | null>(null);
-  useEffect(() => {
-    let alive = true;
-    let timer: any;
-    const load = async () => {
-      try {
-        const r = await fetch("/api/accounts/balances", { credentials: "include" });
-        if (!r.ok) return;
-        const data = await r.json().catch(() => null);
-        if (alive) setAcctBalances(Array.isArray(data) ? data : null);
-      } catch {
-        /* ignore */
-      }
-    };
-    load();
-    timer = setInterval(load, 15000);
-    return () => {
-      alive = false;
-      clearInterval(timer);
-    };
-  }, []);
+  // Live balances via apiFetch (keeps cookies/auth)
+  const { data: acctBalances } = useAccountBalances();
 
   // Persisted filter: mode
   const [mode, setMode] = useState<ModeFilter>(() => {
