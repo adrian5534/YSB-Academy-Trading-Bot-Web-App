@@ -20,11 +20,12 @@ function formatProfit(v: any) {
   return `${n > 0 ? "+$" : n < 0 ? "-$" : "$"}${p}`;
 }
 
-export function TradeHistory({ mode = "all" }: { mode?: HistoryMode }) {
+export function TradeHistory({ mode = "all", accountId }: { mode?: HistoryMode; accountId?: string }) {
   const { data: trades, isLoading } = useTrades();
 
   const rows = (trades ?? [])
     .filter((t) => (mode === "all" ? true : String(t.mode ?? "").toLowerCase() === mode))
+    .filter((t) => (accountId ? t.account_id === accountId : true))
     .slice(0, 50);
 
   return (

@@ -5,7 +5,7 @@ import { LiveChart } from "@/components/LiveChart";
 import { TradeHistory } from "@/components/TradeHistory";
 import { useTrades } from "@/hooks/use-trades";
 import { useBotStatus } from "@/hooks/use-bots";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useAccounts } from "@/hooks/use-accounts";
 
 type ModeFilter = "all" | "paper" | "live" | "backtest";
@@ -16,7 +16,51 @@ export default function Dashboard() {
   const { data: bot } = useBotStatus();
   const { data: accounts } = useAccounts();
 
-  const [mode, setMode] = useState<ModeFilter>("paper");
+  // Persisted filter: mode
+  const [mode, setMode] = useState<ModeFilter>(() => {
+    try {
+      if (typeof window === "undefined") return "paper";
+      const v = localStorage.getItem("dashboard:mode");
+      return v === "all" || v === "paper" || v === "live" || v === "backtest" ? (v as ModeFilter) : "paper";
+    } catch {
+      return "paper";
+    }
+  });
+  // Persisted filter: account
+  const [accountId, setAccountId] = useState<string>(() => {
+    try {
+      if (typeof window === "undefined") return "all";
+      return localStorage.getItem("dashboard:accountId") || "all";
+    } catch {
+      return "all";
+    }
+  }); // "all" or specific account id
+
+  // Save filters on change
+  useEffect(() => {
+    try {
+      localStorage.setItem("dashboard:mode", mode);
+    } catch {}
+  }, [mode]);
+  useEffect(() => {
+    try {
+      localStorage.setItem("dashboard:accountId", accountId);
+    } catch {}
+  }, [accountId]);
+
+  // If selected account no longer exists, fallback to "all"
+  useEffect(() => {
+    if (!accounts || accountId === "all") return;
+    const exists = (accounts as any[]).some((a) => a.id === accountId);
+    if (!exists) setAccountId("all");
+  }, [accounts, accountId]);
+
+  const filteredTrades = useMemo(() => {
+    const byMode = (trades ?? []).filter((t: any) =>
+      mode === "all" ? true : String(t.mode ?? "").toLowerCase() === mode
+    );
+    return byMode.filter((t: any) => (accountId === "all" ? true : t.account_id === accountId));
+  }, [trades, mode, accountId]);
 
   const {
     totalProfit,
@@ -25,9 +69,7 @@ export default function Dashboard() {
     openTrades,
     closedTrades,
   } = useMemo(() => {
-    const list = (trades ?? []).filter((t: any) =>
-      mode === "all" ? true : String(t.mode ?? "").toLowerCase() === mode
-    );
+    const list = filteredTrades;
 
     const isClosed = (t: any) => !!(t.closed_at ?? t.exit ?? t.exit_price);
     const profitNum = (t: any) => Number(t.profit ?? 0);
@@ -54,24 +96,34 @@ export default function Dashboard() {
       openTrades: open.length,
       closedTrades: closed.length,
     };
-  }, [trades, mode]);
+  }, [filteredTrades]);
 
-  // Account balance
-  // - If accounts include balance, show sum for visibility
-  // - Else if mode === "paper", show a derived paper balance (base 10,000 + PnL)
-  // - Else show "—"
+  // Account balance (filtered by selected account)
   const accountBalance = useMemo(() => {
-    const hasReal = (accounts ?? []).some((a: any) => typeof a.balance === "number");
-    if (hasReal) {
-      const total = (accounts ?? []).reduce((s: number, a: any) => s + (Number(a.balance) || 0), 0);
-      return { value: total, label: "Account Balance" };
+    const all = accounts ?? [];
+    if (accountId === "all") {
+      const hasReal = all.some((a: any) => typeof a.balance === "number");
+      if (hasReal) {
+        const total = all.reduce((s: number, a: any) => s + (Number(a.balance) || 0), 0);
+        return { value: total, label: "Account Balance (All)" };
+      }
+      if (mode === "paper") {
+        const base = 10000;
+        return { value: base + totalProfit, label: "Paper Balance (All)" };
+      }
+      return { value: null, label: "Account Balance (All)" };
+    } else {
+      const acc = all.find((a: any) => a.id === accountId);
+      if (acc && typeof acc.balance === "number") {
+        return { value: Number(acc.balance) || 0, label: `Balance • ${acc.label ?? "Account"}` };
+      }
+      if (mode === "paper") {
+        const base = 10000;
+        return { value: base + totalProfit, label: "Paper Balance" };
+      }
+      return { value: null, label: "Account Balance" };
     }
-    if (mode === "paper") {
-      const base = 10000; // display-only derived paper balance
-      return { value: base + totalProfit, label: "Paper Balance" };
-    }
-    return { value: null, label: "Account Balance" };
-  }, [accounts, mode, totalProfit]);
+  }, [accounts, accountId, mode, totalProfit]);
 
   const profitTrend = totalProfit >= 0 ? "up" : "down";
   const profitColor = totalProfit >= 0 ? "text-green-500" : "text-red-500";
@@ -82,7 +134,7 @@ export default function Dashboard() {
         initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.35 }}
-        className="flex items-end justify-between"
+        className="flex items-end justify-between gap-3 flex-wrap"
       >
         <div>
           <div className="text-2xl font-semibold">Dashboard</div>
@@ -91,20 +143,37 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Mode switcher */}
-        <div className="inline-flex rounded-lg border border-border bg-card p-1 text-xs">
-          {(["all", "paper", "live", "backtest"] as ModeFilter[]).map((m) => (
-            <button
-              key={m}
-              onClick={() => setMode(m)}
-              className={`px-3 py-1 rounded-md capitalize ${
-                mode === m ? "bg-ysbPurple text-ysbYellow" : "text-muted-foreground hover:text-foreground"
-              }`}
-              title={`Show ${m} trades`}
-            >
-              {m}
-            </button>
-          ))}
+        <div className="flex items-center gap-2">
+          {/* Account selector */}
+          <select
+            className="rounded-lg border border-border bg-card px-3 py-1 text-sm"
+            value={accountId}
+            onChange={(e) => setAccountId(e.target.value)}
+            title="Filter by account"
+          >
+            <option value="all">All Accounts</option>
+            {(accounts ?? []).map((a: any) => (
+              <option key={a.id} value={a.id}>
+                {a.label ?? a.id}
+              </option>
+            ))}
+          </select>
+
+          {/* Mode switcher */}
+          <div className="inline-flex rounded-lg border border-border bg-card p-1 text-xs">
+            {(["all", "paper", "live", "backtest"] as ModeFilter[]).map((m) => (
+              <button
+                key={m}
+                onClick={() => setMode(m)}
+                className={`px-3 py-1 rounded-md capitalize ${
+                  mode === m ? "bg-ysbPurple text-ysbYellow" : "text-muted-foreground hover:text-foreground"
+                }`}
+                title={`Show ${m} trades`}
+              >
+                {m}
+              </button>
+            ))}
+          </div>
         </div>
       </motion.div>
 
@@ -156,7 +225,7 @@ export default function Dashboard() {
 
       <div className="grid gap-4 lg:grid-cols-2">
         <LiveChart />
-        <TradeHistory mode={mode} />
+        <TradeHistory mode={mode} accountId={accountId === "all" ? undefined : accountId} />
       </div>
     </div>
   );
