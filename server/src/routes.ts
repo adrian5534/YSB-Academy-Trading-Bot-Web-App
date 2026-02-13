@@ -5,7 +5,7 @@ import { requireUser, type AuthedRequest } from "./middleware/auth";
 import { requireProForPaperLive } from "./middleware/subscription";
 import { DerivClient } from "./deriv/DerivClient";
 import { encryptJson } from "./crypto/secrets";
-import { strategies } from "./bots/BotManager";
+import { BotManager, strategies } from "./bots/BotManager";
 import type { WsHub } from "./ws/hub";
 import { parseCsv, runBacktest } from "./backtests/runBacktest";
 import { requireStripe } from "./stripe/stripe";
@@ -52,6 +52,7 @@ function getOrigin(req: any) {
 
 export function registerRoutes(app: express.Express, hub: WsHub) {
   const router = express.Router();
+  const botManager = new BotManager(hub);
 
   // Health check (Render can ping this)
   router.get("/api/health", (_req, res) => res.json({ ok: true }));
@@ -227,7 +228,6 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
       const arr = await c.activeSymbols("brief").catch(() => []);
       await c.disconnect().catch(() => void 0);
 
-      // Return a trimmed shape
       const out = (arr as any[]).map((x) => ({
         symbol: x.symbol,
         display_name: x.display_name,
@@ -407,10 +407,7 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
       const mode = String(req.query.mode ?? "").toLowerCase();
       const accountId = req.query.account_id ? String(req.query.account_id) : null;
 
-      let q = supabaseAdmin
-        .from("trades")
-        .select("*")
-        .eq("user_id", r.user.id);
+      let q = supabaseAdmin.from("trades").select("*").eq("user_id", r.user.id);
 
       if (mode && ["paper", "live", "backtest"].includes(mode)) q = q.eq("mode", mode);
       if (accountId) q = q.eq("account_id", accountId);
@@ -448,9 +445,13 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
       const profitFactor = grossLoss === 0 ? (grossWin > 0 ? 99 : 0) : grossWin / grossLoss;
 
       // simple max drawdown over sequence
-      let eq = 0, peak = 0, dd = 0;
+      let eq = 0,
+        peak = 0,
+        dd = 0;
       for (const p of profits.slice().reverse()) {
-        eq += p; peak = Math.max(peak, eq); dd = Math.max(dd, peak - eq);
+        eq += p;
+        peak = Math.max(peak, eq);
+        dd = Math.max(dd, peak - eq);
       }
 
       res.json(
@@ -604,7 +605,6 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
     requireUser,
     asyncRoute(async (req, res) => {
       const r = req as AuthedRequest;
-      // Parse only known fields; accept optional plan from raw body
       const body = api.stripe.createCheckout.input.parse({ return_url: req.body?.return_url });
       const stripe = requireStripe();
 
@@ -711,7 +711,6 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
 
       const out: Array<{ id: string; type: string; label: string | null; balance: number | null; currency?: string }> = [];
 
-      // Fetch sequentially to avoid flooding Deriv
       for (const a of rows ?? []) {
         let balance: number | null = null;
         let currency: string | undefined;
