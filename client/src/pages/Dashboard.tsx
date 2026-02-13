@@ -5,9 +5,8 @@ import { LiveChart } from "@/components/LiveChart";
 import { TradeHistory } from "@/components/TradeHistory";
 import { useTrades } from "@/hooks/use-trades";
 import { useBotStatus } from "@/hooks/use-bots";
-import { useState, useMemo, useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useAccounts } from "@/hooks/use-accounts";
-import useSWR from "swr";
 
 type ModeFilter = "all" | "paper" | "live" | "backtest";
 
@@ -17,12 +16,28 @@ export default function Dashboard() {
   const { data: bot } = useBotStatus();
   const { data: accounts } = useAccounts();
 
-  // Fetch live balances (Deriv)
-  const { data: acctBalances } = useSWR(
-    "/api/accounts/balances",
-    (u) => fetch(u, { credentials: "include" }).then((r) => r.json()),
-    { refreshInterval: 15000 } // auto-refresh balances
-  );
+  // Live balances without SWR
+  const [acctBalances, setAcctBalances] = useState<any[] | null>(null);
+  useEffect(() => {
+    let alive = true;
+    let timer: any;
+    const load = async () => {
+      try {
+        const r = await fetch("/api/accounts/balances", { credentials: "include" });
+        if (!r.ok) return;
+        const data = await r.json().catch(() => null);
+        if (alive) setAcctBalances(Array.isArray(data) ? data : null);
+      } catch {
+        /* ignore */
+      }
+    };
+    load();
+    timer = setInterval(load, 15000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, []);
 
   // Persisted filter: mode
   const [mode, setMode] = useState<ModeFilter>(() => {
