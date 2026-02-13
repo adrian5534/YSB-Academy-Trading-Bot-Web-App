@@ -509,7 +509,7 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
       const { data, error } = await supabaseAdmin.storage.from("journal-screenshots").createSignedUrl(body.path, 60 * 5);
       if (error) throw error;
       res.json(api.journals.signedUrl.responses[200].parse({ url: data.signedUrl }));
-    });
+    }),
   );
 
   // ===== Settings: risk rules =====
