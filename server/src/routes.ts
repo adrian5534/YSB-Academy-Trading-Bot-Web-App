@@ -51,6 +51,15 @@ function getOrigin(req: any) {
   return `${proto}://${host}`;
 }
 
+// Safely decrypt secrets to avoid crashes if key rotated or data corrupt
+function safeDecrypt<T = any>(enc: unknown): T | null {
+  try {
+    return decryptJson(enc as string) as T;
+  } catch {
+    return null;
+  }
+}
+
 export function registerRoutes(app: express.Express, hub: WsHub) {
   const router = express.Router();
   const botManager = new BotManager(hub);
@@ -123,85 +132,80 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
     if (error) throw error;
     res.json(api.accounts.list.responses[200].parse(data));
   });
-  // Shared path
   router.get(api.accounts.list.path, requireUser, listAccounts);
-  // Alias used by some clients
-  router.get("/api/accounts/list", requireUser, listAccounts);
+  router.get("/api/accounts/list", requireUser, listAccounts); // alias
 
-  // Aggregated balances per account
-  router.get(
-    "/api/accounts/balances",
-    requireUser,
-    asyncRoute(async (req, res) => {
-      res.set("Cache-Control", "no-store");
-      const r = req as AuthedRequest;
+  // ===== Balances =====
+  const listBalances = asyncRoute(async (req, res) => {
+    res.set("Cache-Control", "no-store");
+    const r = req as AuthedRequest;
 
-      const { data: accounts, error } = await supabaseAdmin
-        .from("accounts")
-        .select("id,type,secrets,label,status")
-        .eq("user_id", r.user.id)
-        .eq("status", "active");
-      if (error) throw error;
+    const { data: accounts, error } = await supabaseAdmin
+      .from("accounts")
+      .select("id,type,secrets,label,status")
+      .eq("user_id", r.user.id)
+      .eq("status", "active");
+    if (error) throw error;
 
-      const out: Array<{ account_id: string; type: string; balance: number | null; currency: string | null }> = [];
+    const out: Array<{ account_id: string; type: string; balance: number | null; currency: string | null }> = [];
 
-      // Deriv balances
-      async function fetchDerivBalance(token: string) {
-        // validateToken typically authorizes and returns balance/currency
-        const c = new DerivClient();
-        try {
-          const info = await c.validateToken(token);
-          const bal = typeof (info as any)?.balance === "number" ? (info as any).balance : Number((info as any)?.balance ?? NaN);
-          const cur = (info as any)?.currency ?? null;
-          return { balance: Number.isFinite(bal) ? bal : null, currency: cur };
-        } catch {
-          return { balance: null, currency: null };
-        }
+    async function fetchDerivBalance(token: string) {
+      const c = new DerivClient();
+      try {
+        const info = await c.validateToken(token);
+        const bal = typeof (info as any)?.balance === "number" ? (info as any).balance : Number((info as any)?.balance ?? NaN);
+        const cur = (info as any)?.currency ?? null;
+        return { balance: Number.isFinite(bal) ? bal : null, currency: cur as string | null };
+      } catch {
+        return { balance: null, currency: null };
       }
+    }
 
-      // MT5 balances via worker
-      async function fetchMt5Balance(creds: { server: string; login: string; password: string }) {
-        if (!env.MT5_WORKER_URL) return { balance: null, currency: null };
-        try {
-          const r = await fetch(env.MT5_WORKER_URL.replace(/\/$/, "") + "/mt5/balance", {
-            method: "POST",
-            headers: { "Content-Type": "application/json", "x-api-key": env.MT5_WORKER_API_KEY ?? "" },
-            body: JSON.stringify(creds),
-          });
-          const j = (await r.json().catch(() => ({}))) as any;
-          const bal = typeof j?.balance === "number" ? j.balance : Number(j?.balance ?? NaN);
-          const cur = j?.currency ?? null;
-          return { balance: Number.isFinite(bal) ? bal : null, currency: cur };
-        } catch {
-          return { balance: null, currency: null };
-        }
+    async function fetchMt5Balance(creds: { server: string; login: string; password: string }) {
+      if (!env.MT5_WORKER_URL) return { balance: null, currency: null };
+      try {
+        const r = await fetch(env.MT5_WORKER_URL.replace(/\/$/, "") + "/mt5/balance", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-api-key": env.MT5_WORKER_API_KEY ?? "" },
+          body: JSON.stringify(creds),
+        });
+        const j = (await r.json().catch(() => ({}))) as any;
+        const bal = typeof j?.balance === "number" ? j.balance : Number(j?.balance ?? NaN);
+        const cur = j?.currency ?? null;
+        return { balance: Number.isFinite(bal) ? bal : null, currency: cur as string | null };
+      } catch {
+        return { balance: null, currency: null };
       }
+    }
 
-      for (const acc of accounts ?? []) {
-        if (acc.type === "deriv") {
-          const derivEnc = (acc as any)?.secrets?.deriv_token_enc;
-          const dec = derivEnc ? (decryptJson(derivEnc) as any) : null;
-          const token = dec?.token as string | undefined;
-          const { balance, currency } = token ? await fetchDerivBalance(token) : { balance: null, currency: null };
-          out.push({ account_id: acc.id, type: acc.type, balance, currency });
-        } else if (acc.type === "mt5") {
-          const mt5Enc = (acc as any)?.secrets?.mt5_enc;
-          const dec = mt5Enc ? (decryptJson(mt5Enc) as any) : null;
-          const creds =
-            dec && dec.server && dec.login && dec.password
-              ? { server: String(dec.server), login: String(dec.login), password: String(dec.password) }
-              : null;
-          const { balance, currency } = creds ? await fetchMt5Balance(creds) : { balance: null, currency: null };
-          out.push({ account_id: acc.id, type: acc.type, balance, currency });
-        } else {
-          out.push({ account_id: acc.id, type: acc.type, balance: null, currency: null });
-        }
+    for (const acc of accounts ?? []) {
+      if (acc.type === "deriv") {
+        const derivEnc = (acc as any)?.secrets?.deriv_token_enc;
+        const dec = derivEnc ? safeDecrypt<any>(derivEnc) : null;
+        const token = dec?.token as string | undefined;
+        const { balance, currency } = token ? await fetchDerivBalance(token) : { balance: null, currency: null };
+        out.push({ account_id: acc.id, type: acc.type, balance, currency });
+      } else if (acc.type === "mt5") {
+        const mt5Enc = (acc as any)?.secrets?.mt5_enc;
+        const dec = mt5Enc ? safeDecrypt<any>(mt5Enc) : null;
+        const creds =
+          dec && dec.server && dec.login && dec.password
+            ? { server: String(dec.server), login: String(dec.login), password: String(dec.password) }
+            : null;
+        const { balance, currency } = creds ? await fetchMt5Balance(creds) : { balance: null, currency: null };
+        out.push({ account_id: acc.id, type: acc.type, balance, currency });
+      } else {
+        out.push({ account_id: acc.id, type: acc.type, balance: null, currency: null });
       }
+    }
 
-      res.json(out);
-    }),
-  );
+    res.json(out);
+  });
 
+  router.get("/api/accounts/balances", requireUser, listBalances);
+  router.get("/api/account/balances", requireUser, listBalances); // legacy alias
+
+  // ===== Accounts: validation/upsert =====
   router.post(
     api.accounts.validateDeriv.path,
     requireUser,
@@ -313,10 +317,8 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
     res.json(api.instruments.list.responses[200].parse(mapped));
   });
 
-  // Shared route
   router.get(api.instruments.list.path, requireUser, listInstruments);
-  // Alias used by client
-  router.get("/api/instruments/list", requireUser, listInstruments);
+  router.get("/api/instruments/list", requireUser, listInstruments); // alias
 
   router.get(
     api.instruments.enabledForAccount.path,
