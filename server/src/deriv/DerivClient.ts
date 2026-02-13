@@ -330,4 +330,12 @@ export class DerivClient {
     if (res?.error) throw new Error(res.error.message || "Deriv open_contract error");
     return res?.proposal_open_contract;
   }
+
+  // Get current account balance (for authorized token)
+  async getBalance(): Promise<{ balance: number; currency?: string }> {
+    const res = await this.sendWithRetry<any>({ balance: 1 }, { timeoutMs: 20_000, retries: 1, retryDelayMs: 600, safeToRetry: true });
+    if (res?.error) throw new Error(res.error.message || "Deriv balance error");
+    const bal = Number(res?.balance?.balance ?? res?.balance?.amount ?? NaN);
+    return { balance: Number.isFinite(bal) ? bal : 0, currency: res?.balance?.currency };
+  }
 }

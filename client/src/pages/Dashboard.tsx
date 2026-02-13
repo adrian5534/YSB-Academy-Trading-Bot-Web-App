@@ -7,6 +7,7 @@ import { useTrades } from "@/hooks/use-trades";
 import { useBotStatus } from "@/hooks/use-bots";
 import { useState, useMemo, useEffect } from "react";
 import { useAccounts } from "@/hooks/use-accounts";
+import useSWR from "swr";
 
 type ModeFilter = "all" | "paper" | "live" | "backtest";
 
@@ -15,6 +16,13 @@ export default function Dashboard() {
   const { data: trades } = useTrades();
   const { data: bot } = useBotStatus();
   const { data: accounts } = useAccounts();
+
+  // Fetch live balances (Deriv)
+  const { data: acctBalances } = useSWR(
+    "/api/accounts/balances",
+    (u) => fetch(u, { credentials: "include" }).then((r) => r.json()),
+    { refreshInterval: 15000 } // auto-refresh balances
+  );
 
   // Persisted filter: mode
   const [mode, setMode] = useState<ModeFilter>(() => {
@@ -98,32 +106,27 @@ export default function Dashboard() {
     };
   }, [filteredTrades]);
 
-  // Account balance (filtered by selected account)
+  // Account balance (filtered by selected account) – prefer live balances
   const accountBalance = useMemo(() => {
-    const all = accounts ?? [];
-    if (accountId === "all") {
-      const hasReal = all.some((a: any) => typeof a.balance === "number");
-      if (hasReal) {
-        const total = all.reduce((s: number, a: any) => s + (Number(a.balance) || 0), 0);
+    const bals = (acctBalances as any[]) ?? [];
+    if (bals.length) {
+      if (accountId === "all") {
+        const total = bals.reduce((s, a) => s + (Number.isFinite(Number(a.balance)) ? Number(a.balance) : 0), 0);
         return { value: total, label: "Account Balance (All)" };
       }
-      if (mode === "paper") {
-        const base = 10000;
-        return { value: base + totalProfit, label: "Paper Balance (All)" };
+      const row = bals.find((a) => a.id === accountId);
+      if (row && typeof row.balance === "number") {
+        return { value: row.balance, label: `Balance • ${row.label ?? "Account"}` };
       }
-      return { value: null, label: "Account Balance (All)" };
-    } else {
-      const acc = all.find((a: any) => a.id === accountId);
-      if (acc && typeof acc.balance === "number") {
-        return { value: Number(acc.balance) || 0, label: `Balance • ${acc.label ?? "Account"}` };
-      }
-      if (mode === "paper") {
-        const base = 10000;
-        return { value: base + totalProfit, label: "Paper Balance" };
-      }
-      return { value: null, label: "Account Balance" };
     }
-  }, [accounts, accountId, mode, totalProfit]);
+
+    // Fallbacks (no balances yet)
+    if (mode === "paper") {
+      const base = 10000;
+      return { value: base + totalProfit, label: accountId === "all" ? "Paper Balance (All)" : "Paper Balance" };
+    }
+    return { value: null, label: "Account Balance" };
+  }, [acctBalances, accountId, mode, totalProfit]);
 
   const profitTrend = totalProfit >= 0 ? "up" : "down";
   const profitColor = totalProfit >= 0 ? "text-green-500" : "text-red-500";

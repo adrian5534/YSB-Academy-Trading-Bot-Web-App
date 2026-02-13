@@ -509,7 +509,7 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
       const { data, error } = await supabaseAdmin.storage.from("journal-screenshots").createSignedUrl(body.path, 60 * 5);
       if (error) throw error;
       res.json(api.journals.signedUrl.responses[200].parse({ url: data.signedUrl }));
-    }),
+    });
   );
 
   // ===== Settings: risk rules =====
@@ -685,6 +685,58 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
       const logs = await supabaseAdmin.from("logs").select("*").order("created_at", { ascending: false }).limit(50);
 
       res.json({ users: users.data, subscriptions: subs.data, logs: logs.data });
+    }),
+  );
+
+  // Accounts with live balances (Deriv only for now)
+  router.get(
+    "/api/accounts/balances",
+    requireUser,
+    asyncRoute(async (req, res) => {
+      const r = req as AuthedRequest;
+
+      const { data: rows, error } = await supabaseAdmin
+        .from("accounts")
+        .select("id,type,label,secrets")
+        .eq("user_id", r.user.id)
+        .order("created_at", { ascending: false });
+
+      if (error) throw error;
+
+      const out: Array<{ id: string; type: string; label: string | null; balance: number | null; currency?: string }> = [];
+
+      // Fetch sequentially to avoid flooding Deriv
+      for (const a of rows ?? []) {
+        let balance: number | null = null;
+        let currency: string | undefined;
+
+        if (a.type === "deriv") {
+          try {
+            const enc = (a.secrets as any)?.deriv_token_enc;
+            if (enc) {
+              const { decryptJson } = await import("./crypto/secrets");
+              const dec: any = decryptJson(enc);
+              const token = String(dec?.token ?? "");
+              if (token) {
+                const c = new DerivClient(token);
+                await c.connect();
+                const b = await c.getBalance().catch(() => null);
+                await c.disconnect().catch(() => void 0);
+                if (b) {
+                  balance = Number(b.balance);
+                  currency = b.currency;
+                }
+              }
+            }
+          } catch {
+            // ignore per-account balance errors
+          }
+        }
+
+        out.push({ id: a.id, type: a.type, label: a.label, balance, currency });
+      }
+
+      res.json(out);
     }),
   );
 
