@@ -1,5 +1,7 @@
 import { useTrades } from "@/hooks/use-trades";
 
+export type HistoryMode = "all" | "paper" | "live" | "backtest";
+
 function formatTime(iso?: string | null) {
   if (!iso) return "--:--:--";
   const d = new Date(iso);
@@ -18,15 +20,20 @@ function formatProfit(v: any) {
   return `${n > 0 ? "+$" : n < 0 ? "-$" : "$"}${p}`;
 }
 
-export function TradeHistory() {
+export function TradeHistory({ mode = "all" }: { mode?: HistoryMode }) {
   const { data: trades, isLoading } = useTrades();
-  const rows = (trades ?? []).slice(0, 50);
+
+  const rows = (trades ?? [])
+    .filter((t) => (mode === "all" ? true : String(t.mode ?? "").toLowerCase() === mode))
+    .slice(0, 50);
 
   return (
     <div className="rounded-2xl border border-border bg-card">
       <div className="flex items-center gap-2 px-4 py-3 border-b border-border">
         <div className="h-2 w-2 rounded-full bg-yellow-300/80 shadow-[0_0_12px_rgba(250,204,21,0.6)]" />
-        <h2 className="font-semibold text-lg">Recent Trades</h2>
+        <h2 className="font-semibold text-lg">
+          Recent Trades {mode !== "all" ? `• ${mode[0].toUpperCase()}${mode.slice(1)}` : ""}
+        </h2>
       </div>
 
       {isLoading ? (
@@ -47,7 +54,6 @@ export function TradeHistory() {
             </thead>
             <tbody>
               {rows.map((t) => {
-                // Field fallbacks so we don't break if names differ
                 const side = String(t.side ?? "").toUpperCase(); // "CALL" | "PUT"
                 const entry =
                   t.entry_price ?? t.entry ?? t.open_price ?? t.open ?? null;
@@ -55,6 +61,7 @@ export function TradeHistory() {
                   t.exit_price ?? t.exit ?? t.close_price ?? t.close ?? null;
                 const profitNum = Number(t.profit ?? 0);
                 const won = profitNum > 0;
+                const isClosed = Boolean(t.closed_at ?? t.exit ?? t.exit_price);
 
                 return (
                   <tr key={t.id} className="border-b border-border/40">
@@ -92,12 +99,14 @@ export function TradeHistory() {
                     <td className="px-4 py-3">
                       <span
                         className={`inline-flex items-center justify-center rounded-md px-2 py-1 text-xs font-medium ${
-                          won
-                            ? "bg-emerald-500/15 text-emerald-300"
-                            : "bg-rose-500/15 text-rose-300"
+                          isClosed
+                            ? won
+                              ? "bg-emerald-500/15 text-emerald-300"
+                              : "bg-rose-500/15 text-rose-300"
+                            : "bg-yellow-500/15 text-yellow-300"
                         }`}
                       >
-                        {won ? "WON" : "LOST"}
+                        {isClosed ? (won ? "WON" : "LOST") : "OPEN"}
                       </span>
                     </td>
                   </tr>
