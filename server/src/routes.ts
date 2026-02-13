@@ -398,12 +398,18 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
     requireUser,
     asyncRoute(async (req, res) => {
       const r = req as AuthedRequest;
-      const { data, error } = await supabaseAdmin
+      const mode = String(req.query.mode ?? "").toLowerCase();
+      const accountId = req.query.account_id ? String(req.query.account_id) : null;
+
+      let q = supabaseAdmin
         .from("trades")
         .select("*")
-        .eq("user_id", r.user.id)
-        .order("opened_at", { ascending: false })
-        .limit(200);
+        .eq("user_id", r.user.id);
+
+      if (mode && ["paper", "live", "backtest"].includes(mode)) q = q.eq("mode", mode);
+      if (accountId) q = q.eq("account_id", accountId);
+
+      const { data, error } = await q.order("opened_at", { ascending: false }).limit(200);
       if (error) throw error;
       res.json(api.trades.list.responses[200].parse(data));
     }),
@@ -414,7 +420,14 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
     requireUser,
     asyncRoute(async (req, res) => {
       const r = req as AuthedRequest;
-      const { data, error } = await supabaseAdmin.from("trades").select("profit,opened_at").eq("user_id", r.user.id);
+      const mode = String(req.query.mode ?? "").toLowerCase();
+      const accountId = req.query.account_id ? String(req.query.account_id) : null;
+
+      let q = supabaseAdmin.from("trades").select("profit,opened_at").eq("user_id", r.user.id);
+      if (mode && ["paper", "live", "backtest"].includes(mode)) q = q.eq("mode", mode);
+      if (accountId) q = q.eq("account_id", accountId);
+
+      const { data, error } = await q;
       if (error) throw error;
 
       const profits = (data ?? []).map((t: any) => Number(t.profit ?? 0));
@@ -428,13 +441,10 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
       const grossLoss = Math.abs(losses.reduce((a: number, b: number) => a + b, 0));
       const profitFactor = grossLoss === 0 ? (grossWin > 0 ? 99 : 0) : grossWin / grossLoss;
 
-      let eq = 0;
-      let peak = 0;
-      let dd = 0;
+      // simple max drawdown over sequence
+      let eq = 0, peak = 0, dd = 0;
       for (const p of profits.slice().reverse()) {
-        eq += p;
-        peak = Math.max(peak, eq);
-        dd = Math.max(dd, peak - eq);
+        eq += p; peak = Math.max(peak, eq); dd = Math.max(dd, peak - eq);
       }
 
       res.json(

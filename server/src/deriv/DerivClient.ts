@@ -321,4 +321,13 @@ export class DerivClient {
     // Buy: NOT safe to retry automatically to avoid duplicate orders
     return this.sendWithRetry<any>({ buy: proposal_id, price: amt }, { timeoutMs: 20_000, retries: 0, safeToRetry: false });
   }
+
+  // Snapshot current state for a contract (returns is_sold, buy_price, sell_price, profit, etc.)
+  async openContract(contractId: number | string) {
+    const res = await this.sendWithRetry<any>({ proposal_open_contract: 1, contract_id: contractId }, {
+      timeoutMs: 20_000, retries: 2, retryDelayMs: 600, safeToRetry: true,
+    });
+    if (res?.error) throw new Error(res.error.message || "Deriv open_contract error");
+    return res?.proposal_open_contract;
+  }
 }

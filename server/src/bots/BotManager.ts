@@ -373,7 +373,6 @@ export class BotManager {
       const dur = Number(cfg.params?.duration ?? 5);
       const durUnit = (cfg.params?.duration_unit ?? "m") as "m" | "h" | "d" | "t";
 
-      // Reserve a slot and auto-release after expiry
       this.incOpen(bot, cfg);
       try {
         const res = await deriv.buyRiseFall({
@@ -384,14 +383,72 @@ export class BotManager {
           duration_unit: durUnit,
           currency: "USD",
         });
-        this.hub.trade({ mode: "live", symbol: cfg.symbol, res });
 
-        const ms = durationToMs(dur, durUnit);
-        setTimeout(() => {
-          this.decOpen(bot, cfg);
+        // Insert opened live trade
+        const buy = res?.buy || res;
+        const contractId = Number(buy?.contract_id ?? buy?.contract_id_buy ?? buy?.longcode?.contract_id ?? 0);
+        const buyPrice = Number(buy?.buy_price ?? buy?.price ?? stakeParam);
+        const openedAt = new Date().toISOString();
+
+        const insert = await supabaseAdmin
+          .from("trades")
+          .insert({
+            user_id: bot.userId,
+            account_id: cfg.account_id,
+            mode: "live",
+            symbol: cfg.symbol,
+            strategy_id: cfg.strategy_id,
+            timeframe: cfg.timeframe,
+            side: signal.side, // "buy" | "sell"
+            entry: buyPrice,
+            opened_at: openedAt,
+            closed_at: null,
+            meta: { contract_id: contractId, stake: stakeParam, duration: dur, duration_unit: durUnit },
+          })
+          .select("*")
+          .single();
+
+        if (insert.data) this.hub.trade(insert.data);
+
+        // Finalize after expiry: poll contract until sold, then update trade
+        const ms = durationToMs(dur, durUnit) + 2000; // small buffer
+        setTimeout(async () => {
+          try {
+            if (!contractId) {
+              this.hub.log("live finalize: missing contract_id");
+              return;
+            }
+
+            // Poll a few times in case settlement lags
+            let snap: any = null;
+            for (let i = 0; i < 6; i++) {
+              snap = await deriv.openContract(contractId).catch(() => null);
+              if (snap?.is_sold) break;
+              await new Promise((r) => setTimeout(r, 1500));
+            }
+
+            const sellPrice = Number(snap?.sell_price ?? snap?.bid_price ?? 0);
+            const profit = Number.isFinite(sellPrice) && Number.isFinite(buyPrice) ? sellPrice - buyPrice : 0;
+            const closedAt = snap?.is_sold && snap?.sell_time
+              ? new Date(Number(snap.sell_time) * 1000).toISOString()
+              : new Date().toISOString();
+
+            if (insert?.data?.id) {
+              const { data: updated } = await supabaseAdmin
+                .from("trades")
+                .update({ exit: sellPrice, profit, closed_at: closedAt })
+                .eq("id", insert.data.id)
+                .select("*")
+                .single();
+              if (updated) this.hub.trade(updated);
+            }
+          } catch (e) {
+            this.hub.log("live finalize error", { error: String(e) });
+          } finally {
+            this.decOpen(bot, cfg);
+          }
         }, ms);
       } catch (e) {
-        // Release slot on failure
         this.decOpen(bot, cfg);
         this.hub.log("live buy error", { error: String(e) });
       }
