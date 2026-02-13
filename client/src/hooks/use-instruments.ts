@@ -16,20 +16,20 @@ export function useInstruments() {
           headers: { "Cache-Control": "no-cache" },
         });
         if (r.status === 304) {
-          // Not modified: keep existing data
           if (alive) setError(null);
           return;
         }
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const j = await r.json();
+        const list = Array.isArray(j) ? j : Array.isArray((j as any)?.data) ? (j as any).data : [];
         if (alive) {
-          setData(Array.isArray(j) ? j : []);
+          setData(list);
           setError(null);
         }
       } catch (e: any) {
         if (alive) {
           setError(String(e?.message || e));
-          // keep previous data on error to avoid blanking UI
+          // keep previous data on error
         }
       } finally {
         if (alive) setLoading(false);
