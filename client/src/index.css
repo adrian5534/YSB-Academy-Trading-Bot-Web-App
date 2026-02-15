@@ -178,3 +178,20 @@ body.drawer-open { overflow: hidden; }
   .app-shell__aside { padding: 18px; }
   .app-shell__main { padding: 32px; }
 }
+
+/* ✅ override Tailwind preflight border color for AppShell chrome */
+.app-shell__topbar,
+.app-shell__aside,
+.app-shell__drawer {
+  border-color: rgba(255, 255, 255, 0.10);
+}
+
+/* keep these consistent too */
+.app-shell__hamburger,
+.app-shell__drawerClose {
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.app-shell__drawerHeader {
+  border-bottom-color: rgba(255, 255, 255, 0.10);
+}
