@@ -38,7 +38,7 @@ type RiskRules = {
   risk_type?: "fixed_stake" | "percent_balance";
   fixed_stake?: number;
   percent_risk?: number;
-  max_daily_loss?: number; // set to 0 to disable
+  max_daily_loss?: number;
   max_drawdown?: number;
   max_open_trades?: number;
   adaptive_enabled?: boolean;
@@ -423,13 +423,6 @@ export default function BotCenter() {
     }
   };
 
-  const maxDailyLossEnabled = Number(risk?.max_daily_loss ?? 0) > 0;
-
-  // ✅ keep a nice display value (don’t show “0” when disabled)
-  const maxDailyLossDisplay = maxDailyLossEnabled
-    ? Math.max(0, Number(risk?.max_daily_loss ?? 0))
-    : Math.max(0, Number(lastMaxDailyLoss ?? 50));
-
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -444,62 +437,6 @@ export default function BotCenter() {
         </span>
       </div>
       <div className="text-sm text-muted-foreground">Manage strategy & execution</div>
-
-      {/* ✅ Global risk settings */}
-      {risk && (
-        <div className="rounded-2xl border border-border bg-card p-4">
-          <div className="flex items-start justify-between gap-3">
-            <div className="font-semibold">Risk limits</div>
-            <button
-              type="button"
-              disabled={savingRisk}
-              onClick={() => saveRisk(risk)}
-              className="rounded-lg bg-ysbPurple px-3 py-2 text-sm font-semibold text-ysbYellow hover:opacity-90 disabled:opacity-50"
-              title="Save risk limits"
-            >
-              Save
-            </button>
-          </div>
-
-          {/* ✅ display like other settings: label + input, then enable/disable below */}
-          <div className="mt-4">
-            <label className="block text-sm mb-1">Max daily loss ($)</label>
-            <input
-              type="number"
-              min={0}
-              step={1}
-              disabled={!maxDailyLossEnabled}
-              className="w-full rounded-lg border border-border bg-background px-3 py-2 disabled:opacity-50"
-              value={maxDailyLossDisplay}
-              onChange={(e) => {
-                const v = Math.max(0, Number(e.target.value) || 0);
-                if (v > 0) setLastMaxDailyLoss(v);
-                setRisk((prev) => ({ ...(prev ?? {}), max_daily_loss: v }));
-              }}
-            />
-
-            <div className="mt-2 flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={maxDailyLossEnabled}
-                onChange={(e) => {
-                  const enabled = e.target.checked;
-
-                  if (enabled) {
-                    const nextVal = Math.max(0, Number(lastMaxDailyLoss ?? 50) || 50);
-                    setRisk((prev) => ({ ...(prev ?? {}), max_daily_loss: nextVal }));
-                  } else {
-                    const current = Math.max(0, Number(risk?.max_daily_loss ?? 0));
-                    if (current > 0) setLastMaxDailyLoss(current);
-                    setRisk((prev) => ({ ...(prev ?? {}), max_daily_loss: 0 }));
-                  }
-                }}
-              />
-              <label className="text-sm">Enable max daily loss</label>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Cards grid: responsive left-to-right */}
       <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
