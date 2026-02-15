@@ -17,7 +17,7 @@ import { motion } from "framer-motion";
 import { useSession } from "@/hooks/use-auth";
 import { useProfile } from "@/hooks/use-profile";
 import { useToast } from "@/hooks/use-toast";
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 
 const nav = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
@@ -43,6 +43,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const { toast } = useToast();
 
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const drawerId = useId();
 
   const isAdmin = profile?.role === "admin";
   const items = isAdmin ? nav : nav.filter((n) => n.href !== "/admin");
@@ -62,11 +63,22 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [drawerOpen]);
 
-  // ✅ Prevent background scroll + layout artifacts while drawer is open
+  // Prevent background scroll while drawer open
   useEffect(() => {
     document.body.classList.toggle("drawer-open", drawerOpen);
     return () => document.body.classList.remove("drawer-open");
   }, [drawerOpen]);
+
+  // Optional: if viewport becomes desktop, force-close drawer
+  useEffect(() => {
+    const mq = window.matchMedia("(min-width: 992px)");
+    const onChange = () => {
+      if (mq.matches) setDrawerOpen(false);
+    };
+    onChange();
+    mq.addEventListener?.("change", onChange);
+    return () => mq.removeEventListener?.("change", onChange);
+  }, []);
 
   const signOutLocal = async () => {
     await supabase.auth.signOut({ scope: "local" });
@@ -122,7 +134,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     layoutKey: "aside" | "drawer";
   }) => (
     <>
-      <nav className="app-shell__nav">
+      <nav className="app-shell__nav" aria-label="Primary navigation">
         {items.map((n) => {
           const active = loc === n.href;
           const Icon = n.icon;
@@ -140,7 +152,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   <Icon size={16} className={active ? "text-ysbYellow" : "text-muted-foreground"} />
                   {active ? (
                     <motion.span
-                      layoutId={`nav-${layoutKey}`} // ✅ avoid cross-tree shared layout conflicts
+                      layoutId={`nav-${layoutKey}`} // avoid cross-tree shared layout conflicts
                       className="text-foreground whitespace-nowrap"
                     >
                       {n.label}
@@ -190,6 +202,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           className="app-shell__hamburger"
           aria-label={drawerOpen ? "Close menu" : "Open menu"}
           aria-expanded={drawerOpen}
+          aria-controls={drawerId}
           onClick={() => setDrawerOpen((v) => !v)}
         >
           <span className="app-shell__hamburgerLines" aria-hidden="true" />
@@ -211,35 +224,42 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <NavContent layoutKey="aside" />
       </aside>
 
-      {/* Mobile drawer */}
-      <div
-        className={cn("app-shell__drawerOverlay", drawerOpen ? "is-open" : "")}
-        onClick={() => setDrawerOpen(false)}
-      />
-      <div className={cn("app-shell__drawer", drawerOpen ? "is-open" : "")} role="dialog" aria-modal="true">
-        <div className="app-shell__drawerHeader">
-          <div className="flex items-center gap-2">
-            <div className="h-9 w-9 rounded-lg bg-ysbPurple grid place-items-center text-ysbYellow font-bold">Y</div>
-            <div className="leading-tight">
-              <div className="font-semibold">YSB Academy</div>
-              <div className="text-xs text-muted-foreground">Trading Bot</div>
+      {/* Mobile drawer (only mounted when open) */}
+      {drawerOpen && (
+        <>
+          <div className="app-shell__drawerOverlay" onClick={() => setDrawerOpen(false)} />
+          <div
+            id={drawerId}
+            className="app-shell__drawer"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Navigation menu"
+          >
+            <div className="app-shell__drawerHeader">
+              <div className="flex items-center gap-2">
+                <div className="h-9 w-9 rounded-lg bg-ysbPurple grid place-items-center text-ysbYellow font-bold">Y</div>
+                <div className="leading-tight">
+                  <div className="font-semibold">YSB Academy</div>
+                  <div className="text-xs text-muted-foreground">Trading Bot</div>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                className="app-shell__drawerClose"
+                aria-label="Close menu"
+                onClick={() => setDrawerOpen(false)}
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="app-shell__drawerBody">
+              <NavContent layoutKey="drawer" onNavigate={() => setDrawerOpen(false)} />
             </div>
           </div>
-
-          <button
-            type="button"
-            className="app-shell__drawerClose"
-            aria-label="Close menu"
-            onClick={() => setDrawerOpen(false)}
-          >
-            ×
-          </button>
-        </div>
-
-        <div className="app-shell__drawerBody">
-          <NavContent layoutKey="drawer" onNavigate={() => setDrawerOpen(false)} />
-        </div>
-      </div>
+        </>
+      )}
 
       <main className="app-shell__main">{children}</main>
     </div>

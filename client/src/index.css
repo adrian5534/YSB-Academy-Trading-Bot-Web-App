@@ -3,27 +3,26 @@
 @tailwind utilities;
 
 :root { color-scheme: dark; }
-html, body { height: 100%; overflow-x: hidden; } /* ✅ prevents right-side overflow line */
+
+html,
 body {
-  margin: 0;
-  font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-  background: hsl(222 47% 11%);
-  color: hsl(210 40% 98%);
+  height: 100%;
+  overflow-x: hidden;
 }
-a { color: inherit; }
 
-/* ✅ lock scroll when drawer is open (class toggled from AppShell) */
-body.drawer-open { overflow: hidden; }
+body.drawer-open {
+  overflow: hidden;
+}
 
-/* --- AppShell responsive layout (hamburger drawer) --- */
+/* ===== AppShell (mobile-first) ===== */
 .app-shell {
   min-height: 100vh;
   display: flex;
   flex-direction: column;
-  overflow-x: hidden; /* ✅ extra safety */
+  overflow-x: hidden;
 }
 
-/* Mobile topbar (shown on < 992px) */
+/* Mobile topbar (<992px) */
 .app-shell__topbar {
   position: sticky;
   top: 0;
@@ -34,28 +33,31 @@ body.drawer-open { overflow: hidden; }
   gap: 12px;
   padding: 12px 14px;
   border-bottom-width: 1px;
+  border-color: rgba(255, 255, 255, 0.10);
 }
 
-/* Hamburger button */
+/* Hamburger */
 .app-shell__hamburger {
   height: 40px;
   width: 44px;
   border-radius: 10px;
-  border: 1px solid rgba(255,255,255,0.12);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   background: transparent;
   display: grid;
   place-items: center;
 }
-.app-shell__hamburger:hover { background: rgba(255,255,255,0.04); }
+.app-shell__hamburger:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
 
-/* ✅ Proper 3-line hamburger (middle line is the span; top/bottom are pseudos) */
+/* 3 lines */
 .app-shell__hamburgerLines {
   position: relative;
   display: inline-block;
   width: 18px;
-  height: 2px;                 /* middle line */
+  height: 2px; /* middle line */
   border-radius: 2px;
-  background: rgba(255,255,255,0.75);
+  background: rgba(255, 255, 255, 0.78);
 }
 .app-shell__hamburgerLines::before,
 .app-shell__hamburgerLines::after {
@@ -65,44 +67,36 @@ body.drawer-open { overflow: hidden; }
   width: 18px;
   height: 2px;
   border-radius: 2px;
-  background: rgba(255,255,255,0.75);
+  background: rgba(255, 255, 255, 0.78);
 }
-.app-shell__hamburgerLines::before { top: -6px; } /* top line */
-.app-shell__hamburgerLines::after { top: 6px; }   /* bottom line */
+.app-shell__hamburgerLines::before { top: -6px; }
+.app-shell__hamburgerLines::after { top: 6px; }
 
 /* Desktop sidebar hidden on mobile */
-.app-shell__aside { display: none; }
+.app-shell__aside {
+  display: none;
+}
 
-/* Drawer overlay + panel (mobile) */
+/* Drawer */
 .app-shell__drawerOverlay {
   position: fixed;
   inset: 0;
   z-index: 45;
-  background: rgba(0,0,0,0.55);
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 160ms ease;
-}
-.app-shell__drawerOverlay.is-open {
-  opacity: 1;
-  pointer-events: auto;
+  background: rgba(0, 0, 0, 0.55);
 }
 
 .app-shell__drawer {
   position: fixed;
   top: 0;
   left: 0;
+  z-index: 50;
   height: 100vh;
   width: min(86vw, 360px);
-  z-index: 50;
-  transform: translateX(-102%);
-  transition: transform 180ms ease;
-  will-change: transform;
-  border-right-width: 1px;
   background: hsl(222 47% 11%);
-  box-shadow: 18px 0 50px rgba(0,0,0,0.55);
+  border-right-width: 1px;
+  border-color: rgba(255, 255, 255, 0.10);
+  box-shadow: 18px 0 50px rgba(0, 0, 0, 0.55);
 }
-.app-shell__drawer.is-open { transform: translateX(0); }
 
 .app-shell__drawerHeader {
   display: flex;
@@ -110,69 +104,58 @@ body.drawer-open { overflow: hidden; }
   justify-content: space-between;
   gap: 10px;
   padding: 14px;
-  border-bottom: 1px solid rgba(255,255,255,0.08);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.10);
 }
+
 .app-shell__drawerClose {
   height: 36px;
   width: 40px;
   border-radius: 10px;
-  border: 1px solid rgba(255,255,255,0.12);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   background: transparent;
-  color: rgba(255,255,255,0.85);
+  color: rgba(255, 255, 255, 0.85);
   font-size: 22px;
   line-height: 1;
 }
-.app-shell__drawerClose:hover { background: rgba(255,255,255,0.04); }
+.app-shell__drawerClose:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
 
 .app-shell__drawerBody {
   padding: 10px 10px 14px;
   height: calc(100vh - 70px);
   overflow: auto;
   -webkit-overflow-scrolling: touch;
-  display: flex;
-  flex-direction: column;
 }
 
-/* Nav/actions shared */
-.app-shell__nav { display: grid; gap: 6px; }
-.app-shell__navItem { display: block; width: 100%; }
+/* Nav spacing under logo */
+.app-shell__header {
+  padding-bottom: 12px;
+  margin-bottom: 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.app-shell__nav {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+}
+.app-shell__navItem {
+  display: block;
+  width: 100%;
+}
 
 .app-shell__actions {
   margin-top: 12px;
   display: grid;
-  grid-template-columns: 1fr;
   gap: 8px;
 }
 
-.app-shell__main { padding: 16px; }
-
-/* ===== AppShell layout fixes (nav spacing under logo/header) ===== */
-.app-shell__aside,
-.app-shell__drawerBody {
-  display: flex;
-  flex-direction: column;
+.app-shell__main {
+  padding: 16px;
 }
 
-.app-shell__header {
-  padding-bottom: 12px; /* ✅ space under logo/title */
-  margin-bottom: 8px;
-  border-bottom: 1px solid rgba(255,255,255,0.08);
-}
-
-.app-shell__nav {
-  margin-top: 8px; /* ✅ prevents first item touching header */
-}
-
-.app-shell__navItem {
-  margin-top: 2px;
-}
-
-/* Drawer header already has border; keep body spaced from it */
-.app-shell__drawerBody {
-  padding-top: 10px;
-}
-
-/* ---------------- Breakpoints (requested) ---------------- */
+/* ===== Breakpoints ===== */
 /* 576px: Small devices (landscape phones) */
 @media (min-width: 576px) {
   .app-shell__main { padding: 18px; }
@@ -187,16 +170,21 @@ body.drawer-open { overflow: hidden; }
 
 /* 992px: Large devices (desktops) */
 @media (min-width: 992px) {
-  .app-shell { display: grid; grid-template-columns: 260px 1fr; }
+  .app-shell {
+    display: grid;
+    grid-template-columns: 260px 1fr;
+  }
+
   .app-shell__topbar { display: none; }
+
   .app-shell__aside {
     display: block;
     min-height: 100vh;
     padding: 16px;
     border-right-width: 1px;
+    border-color: rgba(255, 255, 255, 0.10);
   }
-  .app-shell__drawer,
-  .app-shell__drawerOverlay { display: none; }
+
   .app-shell__main { padding: 24px; }
 }
 
@@ -205,21 +193,4 @@ body.drawer-open { overflow: hidden; }
   .app-shell { grid-template-columns: 280px 1fr; }
   .app-shell__aside { padding: 18px; }
   .app-shell__main { padding: 32px; }
-}
-
-/* ✅ override Tailwind preflight border color for AppShell chrome */
-.app-shell__topbar,
-.app-shell__aside,
-.app-shell__drawer {
-  border-color: rgba(255, 255, 255, 0.10);
-}
-
-/* keep these consistent too */
-.app-shell__hamburger,
-.app-shell__drawerClose {
-  border-color: rgba(255, 255, 255, 0.12);
-}
-
-.app-shell__drawerHeader {
-  border-bottom-color: rgba(255, 255, 255, 0.10);
 }
