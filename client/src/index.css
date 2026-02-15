@@ -3,7 +3,7 @@
 @tailwind utilities;
 
 :root { color-scheme: dark; }
-html, body { height: 100%; }
+html, body { height: 100%; overflow-x: hidden; } /* ✅ prevents right-side overflow line */
 body {
   margin: 0;
   font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
@@ -12,14 +12,18 @@ body {
 }
 a { color: inherit; }
 
+/* ✅ lock scroll when drawer is open (class toggled from AppShell) */
+body.drawer-open { overflow: hidden; }
+
 /* --- AppShell responsive layout (hamburger drawer) --- */
 .app-shell {
   min-height: 100vh;
   display: flex;
   flex-direction: column;
+  overflow-x: hidden; /* ✅ extra safety */
 }
 
-/* Mobile topbar (shown on < 769px) */
+/* Mobile topbar (shown on < 992px) */
 .app-shell__topbar {
   position: sticky;
   top: 0;
@@ -37,23 +41,21 @@ a { color: inherit; }
   height: 40px;
   width: 44px;
   border-radius: 10px;
-  border: 1px solid hsl(var(--border, 240 3.7% 15.9%));
+  border: 1px solid rgba(255,255,255,0.12);
   background: transparent;
   display: grid;
   place-items: center;
 }
 .app-shell__hamburger:hover { background: rgba(255,255,255,0.04); }
 
+/* ✅ Proper 3-line hamburger (middle line is the span; top/bottom are pseudos) */
 .app-shell__hamburgerLines {
-  width: 18px;
-  height: 12px;
   position: relative;
   display: inline-block;
-}
-.app-shell__hamburgerLines::before,
-.app-shell__hamburgerLines::after,
-.app-shell__hamburgerLines {
-  background: currentColor;
+  width: 18px;
+  height: 2px;                 /* middle line */
+  border-radius: 2px;
+  background: rgba(255,255,255,0.75);
 }
 .app-shell__hamburgerLines::before,
 .app-shell__hamburgerLines::after {
@@ -65,13 +67,8 @@ a { color: inherit; }
   border-radius: 2px;
   background: rgba(255,255,255,0.75);
 }
-.app-shell__hamburgerLines::before { top: 0; }
-.app-shell__hamburgerLines::after { bottom: 0; }
-.app-shell__hamburgerLines {
-  height: 2px;
-  border-radius: 2px;
-  background: rgba(255,255,255,0.75);
-}
+.app-shell__hamburgerLines::before { top: -6px; } /* top line */
+.app-shell__hamburgerLines::after { top: 6px; }   /* bottom line */
 
 /* Desktop sidebar hidden on mobile */
 .app-shell__aside { display: none; }
@@ -100,8 +97,10 @@ a { color: inherit; }
   z-index: 50;
   transform: translateX(-102%);
   transition: transform 180ms ease;
+  will-change: transform;
   border-right-width: 1px;
-  background: hsl(222 47% 11%); /* fallback if bg-card vars differ */
+  background: hsl(222 47% 11%);
+  box-shadow: 18px 0 50px rgba(0,0,0,0.55);
 }
 .app-shell__drawer.is-open { transform: translateX(0); }
 
@@ -145,22 +144,21 @@ a { color: inherit; }
 
 .app-shell__main { padding: 16px; }
 
-/* ---------------- Breakpoints (your standard ranges) ---------------- */
-
-/* Mobile (Portrait): 320px – 480px */
-@media (max-width: 480px) {
-  .app-shell__main { padding: 14px; }
-  .app-shell__drawer { width: min(90vw, 340px); }
-}
-
-/* Tablets & Small Laptops: 481px – 768px */
-@media (min-width: 481px) and (max-width: 768px) {
+/* ---------------- Breakpoints (requested) ---------------- */
+/* 576px: Small devices (landscape phones) */
+@media (min-width: 576px) {
   .app-shell__main { padding: 18px; }
   .app-shell__drawer { width: min(82vw, 380px); }
 }
 
-/* Laptops & Standard Desktops: 769px – 1280px */
-@media (min-width: 769px) and (max-width: 1280px) {
+/* 768px: Medium devices (tablets) */
+@media (min-width: 768px) {
+  .app-shell__main { padding: 22px; }
+  .app-shell__drawer { width: min(70vw, 420px); }
+}
+
+/* 992px: Large devices (desktops) */
+@media (min-width: 992px) {
   .app-shell { display: grid; grid-template-columns: 260px 1fr; }
   .app-shell__topbar { display: none; }
   .app-shell__aside {
@@ -174,17 +172,9 @@ a { color: inherit; }
   .app-shell__main { padding: 24px; }
 }
 
-/* Larger than standard desktops */
-@media (min-width: 1281px) {
-  .app-shell { display: grid; grid-template-columns: 280px 1fr; }
-  .app-shell__topbar { display: none; }
-  .app-shell__aside {
-    display: block;
-    min-height: 100vh;
-    padding: 18px;
-    border-right-width: 1px;
-  }
-  .app-shell__drawer,
-  .app-shell__drawerOverlay { display: none; }
+/* 1200px: Extra-large devices (wide desktops) */
+@media (min-width: 1200px) {
+  .app-shell { grid-template-columns: 280px 1fr; }
+  .app-shell__aside { padding: 18px; }
   .app-shell__main { padding: 32px; }
 }

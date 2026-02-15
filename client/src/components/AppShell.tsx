@@ -62,6 +62,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [drawerOpen]);
 
+  // ✅ Prevent background scroll + layout artifacts while drawer is open
+  useEffect(() => {
+    document.body.classList.toggle("drawer-open", drawerOpen);
+    return () => document.body.classList.remove("drawer-open");
+  }, [drawerOpen]);
+
   const signOutLocal = async () => {
     await supabase.auth.signOut({ scope: "local" });
 
