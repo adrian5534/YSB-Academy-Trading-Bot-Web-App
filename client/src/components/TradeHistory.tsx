@@ -40,8 +40,8 @@ export function TradeHistory({
     .slice(0, 50);
 
   return (
-    <div className="rounded-2xl border border-border bg-card">
-      <div className="flex items-center gap-2 px-4 py-3 border-b border-border">
+    <div className="trade-history rounded-2xl border border-border bg-card flex flex-col">
+      <div className="trade-history__header flex items-center gap-2 px-4 py-3 border-b border-border">
         <div className="h-2 w-2 rounded-full bg-yellow-300/80 shadow-[0_0_12px_rgba(250,204,21,0.6)]" />
         <h2 className="font-semibold text-lg">
           Recent Trades {mode !== "all" ? `• ${mode[0].toUpperCase()}${mode.slice(1)}` : ""}
@@ -49,10 +49,10 @@ export function TradeHistory({
       </div>
 
       {isLoading ? (
-        <div className="p-4 text-muted-foreground">Loading…</div>
+        <div className="trade-history__body p-4 text-muted-foreground">Loading…</div>
       ) : (
-        <div className="overflow-x-auto">
-          <table className="min-w-full text-sm">
+        <div className="trade-history__body">
+          <table className="trade-history__table min-w-full text-sm">
             <thead className="text-muted-foreground">
               <tr className="border-b border-border/70">
                 <th className="px-4 py-3 text-left font-medium">Time</th>
@@ -85,7 +85,9 @@ export function TradeHistory({
                             : "border-rose-500/30 bg-rose-500/10 text-rose-300"
                         }`}
                       >
-                        <span className={`h-1.5 w-1.5 rounded-full ${side === "CALL" ? "bg-emerald-400" : "bg-rose-400"}`} />
+                        <span
+                          className={`h-1.5 w-1.5 rounded-full ${side === "CALL" ? "bg-emerald-400" : "bg-rose-400"}`}
+                        />
                         {side || "-"}
                       </span>
                     </td>
@@ -93,7 +95,11 @@ export function TradeHistory({
                     <td className="px-4 py-3 tabular-nums">{formatPrice(exit)}</td>
                     <td
                       className={`px-4 py-3 tabular-nums font-semibold ${
-                        profitNum > 0 ? "text-emerald-400" : profitNum < 0 ? "text-rose-400" : "text-muted-foreground"
+                        profitNum > 0
+                          ? "text-emerald-400"
+                          : profitNum < 0
+                            ? "text-rose-400"
+                            : "text-muted-foreground"
                       }`}
                     >
                       {formatProfit(profitNum)}

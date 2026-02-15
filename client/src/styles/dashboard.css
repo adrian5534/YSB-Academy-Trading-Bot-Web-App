@@ -1,3 +1,59 @@
+/* Shared panel height so LiveChart and TradeHistory match */
+.dashboard-panels {
+  --dash-panel-h: 320px; /* phones */
+}
+
+@media (min-width: 576px) {
+  .dashboard-panels { --dash-panel-h: 360px; }
+}
+
+@media (min-width: 768px) {
+  .dashboard-panels { --dash-panel-h: 400px; }
+}
+
+@media (min-width: 992px) {
+  .dashboard-panels { --dash-panel-h: 440px; }
+}
+
+@media (min-width: 1200px) {
+  .dashboard-panels { --dash-panel-h: 480px; }
+}
+
+/* Apply same height to both cards */
+.dashboard-panels .live-chart,
+.dashboard-panels .trade-history {
+  height: var(--dash-panel-h);
+}
+
+/* LiveChart plot fills available space */
+.dashboard-panels .live-chart {
+  display: flex;
+  flex-direction: column;
+}
+.dashboard-panels .live-chart__plot {
+  flex: 1;
+  min-height: 0;
+}
+
+/* TradeHistory scroll area fills available space */
+.dashboard-panels .trade-history {
+  display: flex;
+  flex-direction: column;
+}
+.dashboard-panels .trade-history__body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto; /* vertical + horizontal */
+}
+
+/* Optional: keep table header visible while scrolling */
+.dashboard-panels .trade-history thead th {
+  position: sticky;
+  top: 0;
+  background: hsl(222 47% 11%);
+  z-index: 1;
+}
+
 /* LiveChart responsive height (mobile-first) */
 .live-chart__plot {
   height: 220px; /* phones */
