@@ -19,6 +19,13 @@ type StrategyParams = {
   duration: number;
   duration_unit: DurationUnit;
   max_open_trades: number;
+
+  /**
+   * Early exit when unrealized profit reaches this USD amount.
+   * Set to 0 to disable.
+   */
+  early_sell_profit?: number;
+
   [k: string]: any;
 };
 
@@ -70,6 +77,7 @@ export default function BotCenter() {
     duration: 5,
     duration_unit: "m",
     max_open_trades: 5,
+    early_sell_profit: 0,
   });
 
   const [showSettings, setShowSettings] = usePersistedState<boolean>("bot:showSettings", false);
@@ -215,12 +223,13 @@ export default function BotCenter() {
         // merge defaults when strategy changes (preserve execution fields)
         if (patch.strategy_id && patch.strategy_id !== b.strategy_id) {
           const defaults = getStrategyDefaults(patch.strategy_id);
-          const execKeys = new Set(["stake", "duration", "duration_unit", "max_open_trades"]);
+          const execKeys = new Set(["stake", "duration", "duration_unit", "max_open_trades", "early_sell_profit"]);
           const exec = {
             stake: Number(b.params?.stake ?? 250),
             duration: Number(b.params?.duration ?? 5),
             duration_unit: (b.params?.duration_unit as DurationUnit) ?? computeExecUnit(b.timeframe),
             max_open_trades: Number(b.params?.max_open_trades ?? 5),
+            early_sell_profit: Number(b.params?.early_sell_profit ?? 0),
           };
 
           const nextParams: StrategyParams = {
@@ -371,13 +380,16 @@ export default function BotCenter() {
         duration: p.duration ?? 5,
         duration_unit: p.duration_unit ?? (timeframe === "1s" ? "t" : "m"),
         max_open_trades: p.max_open_trades ?? 5,
+        early_sell_profit: Number(p.early_sell_profit ?? 0),
       };
 
       if (!strategyId) return exec;
 
       const defaults = getStrategyDefaults(strategyId);
       const allowedKeys = new Set(
-        Object.keys(defaults).concat(EXECUTION_FIELDS.map((f) => f.key)).concat(["max_open_trades"]),
+        Object.keys(defaults)
+          .concat(EXECUTION_FIELDS.map((f) => f.key))
+          .concat(["max_open_trades", "early_sell_profit"]),
       );
 
       const next: Record<string, any> = {};
@@ -1014,6 +1026,21 @@ function StrategySettingsModal({
               value={Number(form.max_open_trades ?? 5)}
               onChange={(e) => setForm({ ...form, max_open_trades: Math.max(1, Number(e.target.value)) })}
             />
+          </div>
+
+          <div>
+            <label className="block text-sm mb-1">Early sell profit (USD)</label>
+            <input
+              type="number"
+              min={0}
+              step={0.01}
+              className="w-full rounded-lg border border-border bg-background px-3 py-2"
+              value={Math.max(0, Number(form.early_sell_profit ?? 0) || 0)}
+              onChange={(e) => setForm({ ...form, early_sell_profit: Math.max(0, Number(e.target.value) || 0) })}
+            />
+            <div className="mt-1 text-xs text-muted-foreground">
+              Set to 0 to disable. If Deriv offers resale for the contract, the bot will sell when profit reaches this amount.
+            </div>
           </div>
 
           {/* ✅ Risk limits (styled like other settings: label + input, enable below) */}

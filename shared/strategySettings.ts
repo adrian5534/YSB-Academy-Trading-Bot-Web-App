@@ -46,6 +46,16 @@ export const EXECUTION_FIELDS: FieldDescriptor[] = [
     category: "execution",
     description: "Set to 0 to disable. When exceeded, the bot should stop opening new trades for the day.",
   },
+  {
+    key: "early_sell_profit",
+    label: "Early sell profit (USD)",
+    type: "number",
+    min: 0,
+    step: 0.01,
+    default: 0,
+    category: "execution",
+    description: "Set to 0 to disable. If Deriv allows resale, sell when unrealized profit reaches this amount.",
+  },
 ];
 
 export const STRATEGY_SETTINGS: Record<string, FieldDescriptor[]> = {

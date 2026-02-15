@@ -166,6 +166,28 @@ export class BotManager {
     this.hub.status(this.getStatus(userId));
   }
 
+  // prevent double-decrement when a trade is closed early + later finalized
+  private releasedTradeKeys = new Set<string>(); // `${cfgKey}::${tradeId}`
+  private tradeToCfgKey = new Map<string, string>(); // tradeId -> cfgKey
+
+  private decOpenByCfgKey(cfgKey: string) {
+    const v = (this.openCounts.get(cfgKey) ?? 0) - 1;
+    if (v <= 0) this.openCounts.delete(cfgKey);
+    else this.openCounts.set(cfgKey, v);
+  }
+
+  private releaseOpenOnceByTradeId(tradeId: string) {
+    const cfgKey = this.tradeToCfgKey.get(tradeId);
+    if (!cfgKey) return;
+
+    const rk = `${cfgKey}::${tradeId}`;
+    if (this.releasedTradeKeys.has(rk)) return;
+
+    this.releasedTradeKeys.add(rk);
+    this.decOpenByCfgKey(cfgKey);
+    this.tradeToCfgKey.delete(tradeId);
+  }
+
   private async reconcileAccountLiveTrades(userId: string, accountId: string) {
     // throttle: once every 15s per account
     const now = Date.now();
@@ -197,6 +219,17 @@ export class BotManager {
     if (error) throw error;
     if (!openTrades?.length) return;
 
+    const toNum = (v: any, fb = 0) => {
+      const n = typeof v === "number" ? v : Number(v);
+      return Number.isFinite(n) ? n : fb;
+    };
+
+    const canResell = (snap: any) => {
+      // Deriv commonly returns is_valid_to_sell = 1 when resale is available
+      if (snap?.is_valid_to_sell === 1 || snap?.is_valid_to_sell === true) return true;
+      return false;
+    };
+
     for (const tr of openTrades as any[]) {
       const contractId = Number(tr?.meta?.contract_id ?? 0);
       if (!contractId) continue;
@@ -208,24 +241,79 @@ export class BotManager {
         continue; // transient; leave open
       }
 
-      // Deriv: close only when sold/settled
-      if (!snap?.is_sold) continue;
+      // If already settled, close in DB (existing behavior)
+      if (snap?.is_sold) {
+        const buyPrice = toNum(tr?.entry, 0);
+        const sellPrice = toNum(snap?.sell_price ?? snap?.bid_price, 0);
+        const profit = Number.isFinite(sellPrice) && Number.isFinite(buyPrice) ? sellPrice - buyPrice : 0;
+        const closedAt =
+          snap?.sell_time ? new Date(Number(snap.sell_time) * 1000).toISOString() : new Date().toISOString();
 
-      const buyPrice = Number(tr?.entry ?? 0);
-      const sellPrice = Number(snap?.sell_price ?? snap?.bid_price ?? 0);
-      const profit = Number.isFinite(sellPrice) && Number.isFinite(buyPrice) ? sellPrice - buyPrice : 0;
+        try {
+          const { data: updated } = await supabaseAdmin
+            .from("trades")
+            .update({ exit: sellPrice, profit, closed_at: closedAt })
+            .eq("id", tr.id)
+            .select("*")
+            .single();
 
-      const closedAt =
-        snap?.sell_time ? new Date(Number(snap.sell_time) * 1000).toISOString() : new Date().toISOString();
+          if (updated) this.hub.trade(updated);
+          this.releaseOpenOnceByTradeId(String(tr.id));
+          this.hub.log("reconciled live trade closed", { tradeId: tr.id, contractId, sellPrice, profit });
+        } catch (e) {
+          this.hub.log("reconcile: db update failed", { tradeId: tr.id, error: String(e) });
+        }
+        continue;
+      }
 
-      try {
-        await supabaseAdmin
-          .from("trades")
-          .update({ exit: sellPrice, profit, closed_at: closedAt })
-          .eq("id", tr.id);
-        this.hub.log("reconciled live trade closed", { tradeId: tr.id, contractId, sellPrice, profit });
-      } catch (e) {
-        this.hub.log("reconcile: db update failed", { tradeId: tr.id, error: String(e) });
+      // ✅ Early-sell logic (only if enabled per trade)
+      const earlySellProfit = toNum(tr?.meta?.early_sell_profit ?? 0, 0);
+      if (earlySellProfit > 0) {
+        const profitNow = toNum(snap?.profit ?? 0, 0);
+
+        if (profitNow >= earlySellProfit && canResell(snap)) {
+          try {
+            await deriv.sellContract(contractId, 0);
+
+            // confirm sold (or at least get the final sell_price)
+            const snap2 = await deriv.openContract(contractId).catch(() => null);
+
+            if (snap2?.is_sold) {
+              const buyPrice = toNum(tr?.entry, 0);
+              const sellPrice = toNum(snap2?.sell_price ?? snap2?.bid_price, 0);
+              const profit = Number.isFinite(sellPrice) && Number.isFinite(buyPrice) ? sellPrice - buyPrice : profitNow;
+              const closedAt =
+                snap2?.sell_time ? new Date(Number(snap2.sell_time) * 1000).toISOString() : new Date().toISOString();
+
+              const { data: updated } = await supabaseAdmin
+                .from("trades")
+                .update({
+                  exit: sellPrice,
+                  profit,
+                  closed_at: closedAt,
+                  meta: { ...(tr?.meta ?? {}), early_sold: true, early_sold_at: new Date().toISOString() },
+                })
+                .eq("id", tr.id)
+                .select("*")
+                .single();
+
+              if (updated) this.hub.trade(updated);
+              this.releaseOpenOnceByTradeId(String(tr.id));
+
+              this.hub.log("early sell executed", {
+                tradeId: tr.id,
+                contractId,
+                profitNow,
+                threshold: earlySellProfit,
+                sellPrice,
+              });
+            } else {
+              this.hub.log("early sell attempted (not sold yet)", { tradeId: tr.id, contractId, profitNow, threshold: earlySellProfit });
+            }
+          } catch (e) {
+            this.hub.log("early sell failed", { tradeId: tr.id, contractId, error: String(e) });
+          }
+        }
       }
     }
   }
@@ -486,27 +574,43 @@ export class BotManager {
             symbol: cfg.symbol,
             strategy_id: cfg.strategy_id,
             timeframe: cfg.timeframe,
-            side: signal.side, // "buy" | "sell"
+            side: signal.side,
             entry: buyPrice,
             opened_at: openedAt,
             closed_at: null,
-            meta: { contract_id: contractId, stake: stakeParam, duration: dur, duration_unit: durUnit },
+            meta: {
+              contract_id: contractId,
+              stake: stakeParam,
+              duration: dur,
+              duration_unit: durUnit,
+              early_sell_profit: Math.max(0, Number(cfg.params?.early_sell_profit ?? 0) || 0),
+            },
           })
           .select("*")
           .single();
 
-        if (insert.data) this.hub.trade(insert.data);
+        if (insert.data) {
+          this.hub.trade(insert.data);
+          // track mapping so reconciliation / early sell can release the in-memory counter safely
+          this.tradeToCfgKey.set(String(insert.data.id), this.cfgKey(bot, cfg));
+        }
 
-        // Finalize after expiry: poll contract until sold, then update trade
-        const ms = durationToMs(dur, durUnit) + 2000; // small buffer
+        // Finalize after expiry
+        const ms = durationToMs(dur, durUnit) + 2000;
         setTimeout(async () => {
+          const tradeId = String(insert?.data?.id ?? "");
           try {
             if (!contractId) {
               this.hub.log("live finalize: missing contract_id");
               return;
             }
 
-            // Poll a few times in case settlement lags
+            // If already closed (e.g., early-sold), skip finalize update
+            if (tradeId) {
+              const { data: row } = await supabaseAdmin.from("trades").select("closed_at").eq("id", tradeId).maybeSingle();
+              if (row?.closed_at) return;
+            }
+
             let snap: any = null;
             for (let i = 0; i < 6; i++) {
               snap = await deriv.openContract(contractId).catch(() => null);
@@ -516,15 +620,16 @@ export class BotManager {
 
             const sellPrice = Number(snap?.sell_price ?? snap?.bid_price ?? 0);
             const profit = Number.isFinite(sellPrice) && Number.isFinite(buyPrice) ? sellPrice - buyPrice : 0;
-            const closedAt = snap?.is_sold && snap?.sell_time
-              ? new Date(Number(snap.sell_time) * 1000).toISOString()
-              : new Date().toISOString();
+            const closedAt =
+              snap?.is_sold && snap?.sell_time
+                ? new Date(Number(snap.sell_time) * 1000).toISOString()
+                : new Date().toISOString();
 
-            if (insert?.data?.id) {
+            if (tradeId) {
               const { data: updated } = await supabaseAdmin
                 .from("trades")
                 .update({ exit: sellPrice, profit, closed_at: closedAt })
-                .eq("id", insert.data.id)
+                .eq("id", tradeId)
                 .select("*")
                 .single();
               if (updated) this.hub.trade(updated);
@@ -532,7 +637,8 @@ export class BotManager {
           } catch (e) {
             this.hub.log("live finalize error", { error: String(e) });
           } finally {
-            this.decOpen(bot, cfg);
+            if (tradeId) this.releaseOpenOnceByTradeId(tradeId);
+            else this.decOpen(bot, cfg);
           }
         }, ms);
       } catch (e) {

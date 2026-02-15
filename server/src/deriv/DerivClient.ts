@@ -425,4 +425,17 @@ export class DerivClient {
     const arr = res?.active_symbols;
     return Array.isArray(arr) ? arr : [];
   }
+
+  /**
+   * Attempt to sell an open contract early (when resale is offered).
+   * Note: avoid automatic retries to reduce duplicate/edge-case behavior.
+   */
+  async sellContract(contractId: number | string, price: number = 0) {
+    const res = await this.sendWithRetry<any>(
+      { sell: contractId, price: Number(price) },
+      { timeoutMs: 20_000, retries: 0, safeToRetry: false },
+    );
+    if (res?.error) throw new Error(res.error.message || "Deriv sell error");
+    return res;
+  }
 }
