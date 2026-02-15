@@ -268,6 +268,7 @@ export default function Dashboard() {
       <LiveChart
         trades={filteredTrades}
         baseEquity={mode === "paper" ? 10000 : 0}
+        currentEquity={mode === "paper" ? null : accountBalance.value}
         title="Equity Curve"
       />
 
