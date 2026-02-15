@@ -114,7 +114,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const NavContent = ({ onNavigate }: { onNavigate?: () => void }) => (
+  const NavContent = ({
+    onNavigate,
+    layoutKey,
+  }: {
+    onNavigate?: () => void;
+    layoutKey: "aside" | "drawer";
+  }) => (
     <>
       <nav className="app-shell__nav">
         {items.map((n) => {
@@ -133,7 +139,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 <span className="inline-flex items-center gap-2">
                   <Icon size={16} className={active ? "text-ysbYellow" : "text-muted-foreground"} />
                   {active ? (
-                    <motion.span layoutId="nav" className="text-foreground whitespace-nowrap">
+                    <motion.span
+                      layoutId={`nav-${layoutKey}`} // ✅ avoid cross-tree shared layout conflicts
+                      className="text-foreground whitespace-nowrap"
+                    >
                       {n.label}
                     </motion.span>
                   ) : (
@@ -199,7 +208,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </div>
         </div>
 
-        <NavContent />
+        <NavContent layoutKey="aside" />
       </aside>
 
       {/* Mobile drawer */}
@@ -228,7 +237,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
 
         <div className="app-shell__drawerBody">
-          <NavContent onNavigate={() => setDrawerOpen(false)} />
+          <NavContent layoutKey="drawer" onNavigate={() => setDrawerOpen(false)} />
         </div>
       </div>
 
