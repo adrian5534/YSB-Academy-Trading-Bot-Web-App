@@ -20,12 +20,23 @@ function formatProfit(v: any) {
   return `${n > 0 ? "+$" : n < 0 ? "-$" : "$"}${p}`;
 }
 
-export function TradeHistory({ mode = "all", accountId }: { mode?: HistoryMode; accountId?: string }) {
-  const { data: trades, isLoading } = useTrades();
+export function TradeHistory({
+  mode = "all",
+  accountId,
+  trades: tradesProp,
+}: {
+  mode?: HistoryMode;
+  accountId?: string;
+  trades?: any[];
+}) {
+  const { data: fetchedTrades, isLoading: fetchedLoading } = useTrades();
 
-  const rows = (trades ?? [])
-    .filter((t) => (mode === "all" ? true : String(t.mode ?? "").toLowerCase() === mode))
-    .filter((t) => (accountId ? t.account_id === accountId : true))
+  const trades = (tradesProp ?? fetchedTrades ?? []) as any[];
+  const isLoading = tradesProp ? false : fetchedLoading;
+
+  const rows = trades
+    .filter((t) => (mode === "all" ? true : String(t?.mode ?? "").toLowerCase() === mode))
+    .filter((t) => (accountId ? String(t?.account_id ?? "") === String(accountId) : true))
     .slice(0, 50);
 
   return (
@@ -55,11 +66,9 @@ export function TradeHistory({ mode = "all", accountId }: { mode?: HistoryMode; 
             </thead>
             <tbody>
               {rows.map((t) => {
-                const side = String(t.side ?? "").toUpperCase(); // "CALL" | "PUT"
-                const entry =
-                  t.entry_price ?? t.entry ?? t.open_price ?? t.open ?? null;
-                const exit =
-                  t.exit_price ?? t.exit ?? t.close_price ?? t.close ?? null;
+                const side = String(t.side ?? "").toUpperCase();
+                const entry = t.entry_price ?? t.entry ?? t.open_price ?? t.open ?? null;
+                const exit = t.exit_price ?? t.exit ?? t.close_price ?? t.close ?? null;
                 const profitNum = Number(t.profit ?? 0);
                 const won = profitNum > 0;
                 const isClosed = Boolean(t.closed_at ?? t.exit ?? t.exit_price);
@@ -76,11 +85,7 @@ export function TradeHistory({ mode = "all", accountId }: { mode?: HistoryMode; 
                             : "border-rose-500/30 bg-rose-500/10 text-rose-300"
                         }`}
                       >
-                        <span
-                          className={`h-1.5 w-1.5 rounded-full ${
-                            side === "CALL" ? "bg-emerald-400" : "bg-rose-400"
-                          }`}
-                        />
+                        <span className={`h-1.5 w-1.5 rounded-full ${side === "CALL" ? "bg-emerald-400" : "bg-rose-400"}`} />
                         {side || "-"}
                       </span>
                     </td>
@@ -88,11 +93,7 @@ export function TradeHistory({ mode = "all", accountId }: { mode?: HistoryMode; 
                     <td className="px-4 py-3 tabular-nums">{formatPrice(exit)}</td>
                     <td
                       className={`px-4 py-3 tabular-nums font-semibold ${
-                        profitNum > 0
-                          ? "text-emerald-400"
-                          : profitNum < 0
-                          ? "text-rose-400"
-                          : "text-muted-foreground"
+                        profitNum > 0 ? "text-emerald-400" : profitNum < 0 ? "text-rose-400" : "text-muted-foreground"
                       }`}
                     >
                       {formatProfit(profitNum)}
@@ -113,6 +114,7 @@ export function TradeHistory({ mode = "all", accountId }: { mode?: HistoryMode; 
                   </tr>
                 );
               })}
+
               {rows.length === 0 && (
                 <tr>
                   <td className="px-4 py-6 text-muted-foreground" colSpan={7}>

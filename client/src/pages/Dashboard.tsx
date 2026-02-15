@@ -248,8 +248,14 @@ export default function Dashboard() {
         />
       </div>
 
+      {/* Add the chart somewhere appropriate (example below stats) */}
+      <LiveChart
+        trades={filteredTrades}
+        baseEquity={mode === "paper" ? 10000 : 0}
+        title="Equity Curve"
+      />
+
       <div className="grid gap-4 lg:grid-cols-2">
-        <LiveChart />
         <TradeHistory mode={mode} accountId={accountId === "all" ? undefined : accountId} />
       </div>
     </div>
