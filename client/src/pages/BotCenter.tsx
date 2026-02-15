@@ -423,6 +423,13 @@ export default function BotCenter() {
     }
   };
 
+  const maxDailyLossEnabled = Number(risk?.max_daily_loss ?? 0) > 0;
+
+  // ✅ keep a nice display value (don’t show “0” when disabled)
+  const maxDailyLossDisplay = maxDailyLossEnabled
+    ? Math.max(0, Number(risk?.max_daily_loss ?? 0))
+    : Math.max(0, Number(lastMaxDailyLoss ?? 50));
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -437,6 +444,62 @@ export default function BotCenter() {
         </span>
       </div>
       <div className="text-sm text-muted-foreground">Manage strategy & execution</div>
+
+      {/* ✅ Global risk settings */}
+      {risk && (
+        <div className="rounded-2xl border border-border bg-card p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div className="font-semibold">Risk limits</div>
+            <button
+              type="button"
+              disabled={savingRisk}
+              onClick={() => saveRisk(risk)}
+              className="rounded-lg bg-ysbPurple px-3 py-2 text-sm font-semibold text-ysbYellow hover:opacity-90 disabled:opacity-50"
+              title="Save risk limits"
+            >
+              Save
+            </button>
+          </div>
+
+          {/* ✅ display like other settings: label + input, then enable/disable below */}
+          <div className="mt-4">
+            <label className="block text-sm mb-1">Max daily loss ($)</label>
+            <input
+              type="number"
+              min={0}
+              step={1}
+              disabled={!maxDailyLossEnabled}
+              className="w-full rounded-lg border border-border bg-background px-3 py-2 disabled:opacity-50"
+              value={maxDailyLossDisplay}
+              onChange={(e) => {
+                const v = Math.max(0, Number(e.target.value) || 0);
+                if (v > 0) setLastMaxDailyLoss(v);
+                setRisk((prev) => ({ ...(prev ?? {}), max_daily_loss: v }));
+              }}
+            />
+
+            <div className="mt-2 flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={maxDailyLossEnabled}
+                onChange={(e) => {
+                  const enabled = e.target.checked;
+
+                  if (enabled) {
+                    const nextVal = Math.max(0, Number(lastMaxDailyLoss ?? 50) || 50);
+                    setRisk((prev) => ({ ...(prev ?? {}), max_daily_loss: nextVal }));
+                  } else {
+                    const current = Math.max(0, Number(risk?.max_daily_loss ?? 0));
+                    if (current > 0) setLastMaxDailyLoss(current);
+                    setRisk((prev) => ({ ...(prev ?? {}), max_daily_loss: 0 }));
+                  }
+                }}
+              />
+              <label className="text-sm">Enable max daily loss</label>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Cards grid: responsive left-to-right */}
       <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
@@ -872,7 +935,13 @@ function StrategySettingsModal({
 
   // Modal-local risk UI state (global rule edited here)
   const [mdlEnabled, setMdlEnabled] = reactUseState<boolean>(Number(risk?.max_daily_loss ?? 0) > 0);
-  const [mdlValue, setMdlValue] = reactUseState<number>(Math.max(0, Number(risk?.max_daily_loss ?? 0) || lastMaxDailyLoss || 50));
+
+  // ✅ keep a display value even when disabled (don’t force “0” into the input)
+  const [mdlValue, setMdlValue] = reactUseState<number>(() => {
+    const current = Number(risk?.max_daily_loss ?? 0);
+    if (Number.isFinite(current) && current > 0) return Math.max(0, current);
+    return Math.max(0, Number(lastMaxDailyLoss ?? 50) || 50);
+  });
 
   // keep modal in sync when opening for a different bot
   useEffect(() => {
@@ -886,11 +955,12 @@ function StrategySettingsModal({
     setMdlEnabled(enabled);
 
     if (enabled) {
-      setMdlValue(Math.max(0, current));
-      if (current > 0) setLastMaxDailyLoss(current);
+      const v = Math.max(0, current);
+      setMdlValue(v);
+      if (v > 0) setLastMaxDailyLoss(v);
     } else {
-      // keep whatever last value the user had
-      setMdlValue((v) => (v > 0 ? v : Math.max(0, lastMaxDailyLoss || 50)));
+      // keep last known value visible in the input
+      setMdlValue((v) => (v > 0 ? v : Math.max(0, Number(lastMaxDailyLoss ?? 50) || 50)));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [risk]);
@@ -1009,66 +1079,48 @@ function StrategySettingsModal({
             />
           </div>
 
-          {/* ✅ Max Daily Loss moved HERE (global rule, but edited inside bot settings) */}
+          {/* ✅ Risk limits (styled like other settings: label + input, enable below) */}
           {risk && (
-            <div className="rounded-xl border border-border bg-background p-3">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <div className="text-sm font-semibold">Risk limits</div>
-                  <div className="text-xs text-muted-foreground">
-                    Global (applies to all bots). When hit, the server blocks new trades.
-                  </div>
-                </div>
-                {savingRisk ? (
-                  <div className="text-xs text-muted-foreground">Saving…</div>
-                ) : null}
+            <div>
+              <div className="flex items-center justify-between">
+                <label className="block text-sm mb-1">Max daily loss ($)</label>
+                {savingRisk ? <div className="text-xs text-muted-foreground">Saving…</div> : null}
               </div>
 
-              <div className="mt-3 grid gap-3 md:grid-cols-3 items-end">
-                <div className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={mdlEnabled}
-                    onChange={(e) => {
-                      const enabled = e.target.checked;
-                      setMdlEnabled(enabled);
+              <input
+                type="number"
+                min={0}
+                step={1}
+                disabled={!mdlEnabled}
+                className="w-full rounded-lg border border-border bg-background px-3 py-2 disabled:opacity-50"
+                value={Math.max(0, Number(mdlValue) || 0)}
+                onChange={(e) => {
+                  const v = Math.max(0, Number(e.target.value) || 0);
+                  setMdlValue(v);
+                  if (v > 0) setLastMaxDailyLoss(v);
+                }}
+              />
 
-                      if (enabled) {
-                        const nextVal = (lastMaxDailyLoss > 0 ? lastMaxDailyLoss : 50) || 50;
-                        setMdlValue(nextVal);
-                      } else {
-                        const current = Math.max(0, Number(mdlValue) || 0);
-                        if (current > 0) setLastMaxDailyLoss(current);
-                        setMdlValue(0);
-                      }
-                    }}
-                  />
-                  <label className="text-sm">Enable max daily loss</label>
-                </div>
+              <div className="mt-2 flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={mdlEnabled}
+                  onChange={(e) => {
+                    const enabled = e.target.checked;
+                    setMdlEnabled(enabled);
 
-                <div>
-                  <label className="block text-sm mb-1">Max daily loss ($)</label>
-                  <input
-                    type="number"
-                    min={0}
-                    step={1}
-                    disabled={!mdlEnabled}
-                    className="w-full rounded-lg border border-border bg-card px-3 py-2 disabled:opacity-50"
-                    value={mdlEnabled ? Math.max(0, Number(mdlValue) || 0) : 0}
-                    onChange={(e) => {
-                      const v = Math.max(0, Number(e.target.value) || 0);
-                      setMdlValue(v);
-                      if (v > 0) setLastMaxDailyLoss(v);
-                    }}
-                  />
-                  <div className="mt-1 text-xs text-muted-foreground">
-                    Set to <span className="font-mono">0</span> to disable.
-                  </div>
-                </div>
+                    if (!enabled) {
+                      const current = Math.max(0, Number(mdlValue) || 0);
+                      if (current > 0) setLastMaxDailyLoss(current);
+                      // ✅ do not zero the input display; buildNextRisk() will send 0 when disabled
+                      return;
+                    }
 
-                <div className="text-xs text-muted-foreground md:text-right">
-                  Logs show: <span className="font-mono">risk block: max daily loss reached</span>
-                </div>
+                    // enabling: if empty/invalid, restore a sensible value
+                    setMdlValue((v) => (Number.isFinite(v) && v > 0 ? v : Math.max(0, Number(lastMaxDailyLoss ?? 50) || 50)));
+                  }}
+                />
+                <label className="text-sm">Enable max daily loss</label>
               </div>
             </div>
           )}
