@@ -25,7 +25,6 @@ type Instrument = {
 
 type InstrumentFilters = {
   market: string; // market_display_name
-  submarket: string; // subgroup_display_name or submarket_display_name
   q: string; // search query
 };
 
@@ -120,7 +119,7 @@ export default function BotCenter() {
   // ✅ Instrument picker filter state (persisted)
   const [primaryInstrFilters, setPrimaryInstrFilters] = usePersistedState<InstrumentFilters>(
     "bot:instrumentFilters:primary",
-    { market: "", submarket: "", q: "" },
+    { market: "", q: "" },
   );
 
   const [cardInstrFilters, setCardInstrFilters] = usePersistedState<Record<string, InstrumentFilters>>(
@@ -128,11 +127,11 @@ export default function BotCenter() {
     {},
   );
 
-  const getCardFilters = (id: string): InstrumentFilters => cardInstrFilters[id] ?? { market: "", submarket: "", q: "" };
+  const getCardFilters = (id: string): InstrumentFilters => cardInstrFilters[id] ?? { market: "", q: "" };
   const patchCardFilters = (id: string, patch: Partial<InstrumentFilters>) => {
     setCardInstrFilters((prev: any) => ({
       ...(prev ?? {}),
-      [id]: { ...(prev?.[id] ?? { market: "", submarket: "", q: "" }), ...(patch ?? {}) },
+      [id]: { ...(prev?.[id] ?? { market: "", q: "" }), ...(patch ?? {}) },
     }));
   };
 
@@ -975,23 +974,9 @@ function InstrumentPicker({
       .map(([k]) => k);
   }, [instruments]);
 
-  const submarkets = useMemo(() => {
-    const mm = filters.market;
-    const set = new Map<string, number>();
-    (instruments ?? []).forEach((i: any) => {
-      if (mm && instrumentMarket(i) !== mm) return;
-      const k = instrumentSubmarket(i);
-      set.set(k, (set.get(k) ?? 0) + 1);
-    });
-    return Array.from(set.entries())
-      .sort((a, b) => b[1] - a[1])
-      .map(([k]) => k);
-  }, [instruments, filters.market]);
-
   const filtered = useMemo(() => {
     const q = String(filters.q ?? "").trim().toLowerCase();
     const mm = String(filters.market ?? "");
-    const sm = String(filters.submarket ?? "");
 
     return (instruments ?? [])
       .filter((i: any) => {
@@ -999,12 +984,10 @@ function InstrumentPicker({
         if (!sym) return false;
 
         if (mm && instrumentMarket(i) !== mm) return false;
-        if (sm && instrumentSubmarket(i) !== sm) return false;
-
         if (!q) return true;
 
         const name = String(i?.display_name ?? "");
-        const group = instrumentSubmarket(i);
+        const group = instrumentSubmarket(i); // still searchable, just not a filter
         return (
           sym.toLowerCase().includes(q) ||
           name.toLowerCase().includes(q) ||
@@ -1018,7 +1001,7 @@ function InstrumentPicker({
         if (am !== bm) return am.localeCompare(bm);
         return String(a?.display_name ?? a?.symbol ?? "").localeCompare(String(b?.display_name ?? b?.symbol ?? ""));
       });
-  }, [instruments, filters.market, filters.submarket, filters.q]);
+  }, [instruments, filters.market, filters.q]);
 
   const currentInList = useMemo(() => {
     const s = String(symbol ?? "").trim();
@@ -1035,44 +1018,22 @@ function InstrumentPicker({
 
       {error ? <div className="text-xs text-rose-400">Failed to load instruments: {error}</div> : null}
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-        <div>
-          <label className="block text-xs text-muted-foreground mb-1">Market</label>
-          <select
-            className="w-full rounded-lg border border-border bg-background px-3 py-2"
-            value={filters.market}
-            disabled={isLoading}
-            onChange={(e) => {
-              const nextMarket = e.target.value;
-              // reset submarket when market changes
-              onFiltersChange({ ...filters, market: nextMarket, submarket: "" });
-            }}
-          >
-            <option value="">All markets</option>
-            {markets.map((m) => (
-              <option key={m} value={m}>
-                {m}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div>
-          <label className="block text-xs text-muted-foreground mb-1">Category</label>
-          <select
-            className="w-full rounded-lg border border-border bg-background px-3 py-2"
-            value={filters.submarket}
-            disabled={isLoading}
-            onChange={(e) => onFiltersChange({ ...filters, submarket: e.target.value })}
-          >
-            <option value="">All categories</option>
-            {submarkets.map((sm) => (
-              <option key={sm} value={sm}>
-                {sm}
-              </option>
-            ))}
-          </select>
-        </div>
+      {/* Market only (Category removed) */}
+      <div>
+        <label className="block text-xs text-muted-foreground mb-1">Market</label>
+        <select
+          className="w-full rounded-lg border border-border bg-background px-3 py-2"
+          value={filters.market}
+          disabled={isLoading}
+          onChange={(e) => onFiltersChange({ ...filters, market: e.target.value })}
+        >
+          <option value="">All markets</option>
+          {markets.map((m) => (
+            <option key={m} value={m}>
+              {m}
+            </option>
+          ))}
+        </select>
       </div>
 
       <div>
@@ -1093,14 +1054,12 @@ function InstrumentPicker({
           disabled={isLoading}
           onChange={(e) => onSymbolChange(e.target.value)}
         >
-          {!currentInList && symbol ? (
-            <option value={symbol}>Custom: {symbol}</option>
-          ) : null}
+          {!currentInList && symbol ? <option value={symbol}>Custom: {symbol}</option> : null}
 
           {filtered.slice(0, 500).map((i: any) => {
             const sym = String(i?.symbol ?? "");
             const label = instrumentLabel(i);
-            const meta = `${instrumentMarket(i)} • ${instrumentSubmarket(i)}`;
+            const meta = `${instrumentMarket(i)}`;
             return (
               <option key={sym} value={sym}>
                 {label} — {meta}
