@@ -20,10 +20,10 @@ type StrategyParams = {
   duration_unit: DurationUnit;
   max_open_trades: number;
 
-  /**
-   * Early exit when unrealized profit reaches this USD amount.
-   * Set to 0 to disable.
-   */
+  /** Enable/disable early sell without destroying the threshold value */
+  early_sell_enabled?: boolean;
+
+  /** Early exit when unrealized profit reaches this USD amount */
   early_sell_profit?: number;
 
   [k: string]: any;
@@ -77,6 +77,7 @@ export default function BotCenter() {
     duration: 5,
     duration_unit: "m",
     max_open_trades: 5,
+    early_sell_enabled: false,
     early_sell_profit: 0,
   });
 
@@ -223,12 +224,21 @@ export default function BotCenter() {
         // merge defaults when strategy changes (preserve execution fields)
         if (patch.strategy_id && patch.strategy_id !== b.strategy_id) {
           const defaults = getStrategyDefaults(patch.strategy_id);
-          const execKeys = new Set(["stake", "duration", "duration_unit", "max_open_trades", "early_sell_profit"]);
+          const execKeys = new Set([
+            "stake",
+            "duration",
+            "duration_unit",
+            "max_open_trades",
+            "early_sell_enabled",
+            "early_sell_profit",
+          ]);
+
           const exec = {
             stake: Number(b.params?.stake ?? 250),
             duration: Number(b.params?.duration ?? 5),
             duration_unit: (b.params?.duration_unit as DurationUnit) ?? computeExecUnit(b.timeframe),
             max_open_trades: Number(b.params?.max_open_trades ?? 5),
+            early_sell_enabled: Boolean(b.params?.early_sell_enabled ?? false),
             early_sell_profit: Number(b.params?.early_sell_profit ?? 0),
           };
 
@@ -380,6 +390,7 @@ export default function BotCenter() {
         duration: p.duration ?? 5,
         duration_unit: p.duration_unit ?? (timeframe === "1s" ? "t" : "m"),
         max_open_trades: p.max_open_trades ?? 5,
+        early_sell_enabled: Boolean(p.early_sell_enabled ?? false),
         early_sell_profit: Number(p.early_sell_profit ?? 0),
       };
 
@@ -389,7 +400,7 @@ export default function BotCenter() {
       const allowedKeys = new Set(
         Object.keys(defaults)
           .concat(EXECUTION_FIELDS.map((f) => f.key))
-          .concat(["max_open_trades", "early_sell_profit"]),
+          .concat(["max_open_trades", "early_sell_enabled", "early_sell_profit"]),
       );
 
       const next: Record<string, any> = {};
@@ -921,6 +932,8 @@ function StrategySettingsModal({
     return { ...(risk ?? {}), max_daily_loss: nextVal };
   };
 
+  const earlyEnabled = Boolean(form.early_sell_enabled ?? false);
+
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4">
       <div className="w-full max-w-lg rounded-2xl border border-border bg-card p-5">
@@ -1028,19 +1041,50 @@ function StrategySettingsModal({
             />
           </div>
 
-          <div>
-            <label className="block text-sm mb-1">Early sell profit (USD)</label>
-            <input
-              type="number"
-              min={0}
-              step={0.01}
-              className="w-full rounded-lg border border-border bg-background px-3 py-2"
-              value={Math.max(0, Number(form.early_sell_profit ?? 0) || 0)}
-              onChange={(e) => setForm({ ...form, early_sell_profit: Math.max(0, Number(e.target.value) || 0) })}
-            />
-            <div className="mt-1 text-xs text-muted-foreground">
-              Set to 0 to disable. If Deriv offers resale for the contract, the bot will sell when profit reaches this amount.
+          {/* Early sell toggle + conditional input */}
+          <div className="rounded-xl border border-border p-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-sm font-medium">Early sell</div>
+                <div className="text-xs text-muted-foreground">
+                  {earlyEnabled ? "Disable" : "Enable"}
+                </div>
+              </div>
+
+              <button
+                type="button"
+                aria-label={earlyEnabled ? "Disable early sell" : "Enable early sell"}
+                aria-pressed={earlyEnabled}
+                onClick={() => setForm((f) => ({ ...f, early_sell_enabled: !Boolean(f.early_sell_enabled) }))}
+                className={[
+                  "relative inline-flex h-6 w-11 items-center rounded-full border transition-colors",
+                  earlyEnabled ? "bg-emerald-500/20 border-emerald-500/40" : "bg-muted/40 border-border",
+                ].join(" ")}
+              >
+                <span
+                  className={[
+                    "inline-block h-5 w-5 transform rounded-full bg-white/90 shadow transition-transform",
+                    earlyEnabled ? "translate-x-5" : "translate-x-1",
+                  ].join(" ")}
+                />
+              </button>
             </div>
+
+            {earlyEnabled && (
+              <div className="mt-3">
+                <label className="block text-sm mb-1">Early sell profit (USD)</label>
+                <input
+                  type="number"
+                  min={0}
+                  step={0.01}
+                  className="w-full rounded-lg border border-border bg-background px-3 py-2"
+                  value={Math.max(0, Number(form.early_sell_profit ?? 0) || 0)}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, early_sell_profit: Math.max(0, Number(e.target.value) || 0) }))
+                  }
+                />
+              </div>
+            )}
           </div>
 
           {/* ✅ Risk limits (styled like other settings: label + input, enable below) */}

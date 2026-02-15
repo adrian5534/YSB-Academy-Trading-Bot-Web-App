@@ -225,7 +225,6 @@ export class BotManager {
     };
 
     const canResell = (snap: any) => {
-      // Deriv commonly returns is_valid_to_sell = 1 when resale is available
       if (snap?.is_valid_to_sell === 1 || snap?.is_valid_to_sell === true) return true;
       return false;
     };
@@ -266,8 +265,10 @@ export class BotManager {
         continue;
       }
 
-      // ✅ Early-sell logic (only if enabled per trade)
-      const earlySellProfit = toNum(tr?.meta?.early_sell_profit ?? 0, 0);
+      // ✅ Early-sell logic (only if enabled)
+      const earlyEnabled = Boolean(tr?.meta?.early_sell_enabled ?? false);
+      const earlySellProfit = earlyEnabled ? toNum(tr?.meta?.early_sell_profit ?? 0, 0) : 0;
+
       if (earlySellProfit > 0) {
         const profitNow = toNum(snap?.profit ?? 0, 0);
 
@@ -565,6 +566,9 @@ export class BotManager {
         const buyPrice = Number(buy?.buy_price ?? buy?.price ?? stakeParam);
         const openedAt = new Date().toISOString();
 
+        const earlyEnabled = Boolean((cfg.params as any)?.early_sell_enabled ?? false);
+        const earlyProfit = Math.max(0, Number((cfg.params as any)?.early_sell_profit ?? 0) || 0);
+
         const insert = await supabaseAdmin
           .from("trades")
           .insert({
@@ -583,7 +587,10 @@ export class BotManager {
               stake: stakeParam,
               duration: dur,
               duration_unit: durUnit,
-              early_sell_profit: Math.max(0, Number(cfg.params?.early_sell_profit ?? 0) || 0),
+
+              // ✅ persist both; profit only applies when enabled
+              early_sell_enabled: earlyEnabled,
+              early_sell_profit: earlyEnabled ? earlyProfit : 0,
             },
           })
           .select("*")
