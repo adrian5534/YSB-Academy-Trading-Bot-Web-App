@@ -108,23 +108,37 @@ export default function Dashboard() {
     const allAccounts = (accounts as any[]) ?? [];
 
     const selected =
-      accountId === "all" ? null : allAccounts.find((a) => a.id === accountId) || null;
+      accountId === "all" ? null : allAccounts.find((a) => String(a?.id) === String(accountId)) || null;
     const selectedType = selected?.type as string | undefined;
+
+    const getBalId = (a: any) => String(a?.id ?? a?.account_id ?? "");
+    const toNum = (v: any) => {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    };
 
     if (bals.length) {
       if (accountId === "all") {
-        const total = bals.reduce((s, a) => s + (Number.isFinite(Number(a.balance)) ? Number(a.balance) : 0), 0);
+        const total = bals.reduce((s, a) => s + (toNum(a?.balance) ?? 0), 0);
         return { value: total, label: "Account Balance (All)" };
       }
-      const row = bals.find((a) => a.id === accountId);
-      if (row && typeof row.balance === "number") {
-        return { value: row.balance, label: `Balance • ${row.label ?? "Account"}${row.currency ? ` (${row.currency})` : ""}` };
+
+      const row = bals.find((a) => getBalId(a) === String(accountId));
+      const balNum = row ? toNum(row.balance) : null;
+
+      if (balNum != null) {
+        return {
+          value: balNum,
+          label: `Balance • ${row?.label ?? selected?.label ?? "Account"}${row?.currency ? ` (${row.currency})` : ""}`,
+        };
       }
+
       // If selected is non-Deriv, we don't have live balance
       if (selectedType && selectedType !== "deriv") {
         return { value: null, label: "Balance (Not available for this account type)" };
       }
-      // Deriv selected but no balance -> likely invalid token or auth issue
+
+      // Deriv selected but no balance row/value -> likely invalid token or auth issue
       return { value: null, label: "Balance (Reconnect Deriv token or refresh)" };
     }
 
