@@ -45,7 +45,9 @@ export class DerivClient {
         return;
       } catch (e: any) {
         errors.push(`${base}: ${e?.message || String(e)}`);
-        try { await this.disconnect(); } catch {}
+        try {
+          await this.disconnect();
+        } catch {}
       }
     }
 
@@ -73,11 +75,18 @@ export class DerivClient {
             } catch (cbErr) {
               const e = cbErr as any;
               console.error("[DerivClient] onMessage callback error:", e && (e.stack ?? e.message ?? e));
-              try { console.error("[DerivClient] callback message (raw):", JSON.stringify(msg)); } catch {}
+              try {
+                console.error("[DerivClient] callback message (raw):", JSON.stringify(msg));
+              } catch {}
             }
           }
         } catch (err) {
-          console.error("[DerivClient] message parse error", String(err), "raw:", typeof data === "string" ? data : data.toString());
+          console.error(
+            "[DerivClient] message parse error",
+            String(err),
+            "raw:",
+            typeof data === "string" ? data : data.toString(),
+          );
         }
       };
     }
@@ -87,9 +96,14 @@ export class DerivClient {
     // NEW: lifecycle + heartbeat
     this.ws.on("close", () => {
       this.isOpen = false;
-      if (this.heartbeat) { clearInterval(this.heartbeat); this.heartbeat = undefined; }
+      if (this.heartbeat) {
+        clearInterval(this.heartbeat);
+        this.heartbeat = undefined;
+      }
     });
-    this.ws.on("pong", () => { this.lastPong = Date.now(); });
+    this.ws.on("pong", () => {
+      this.lastPong = Date.now();
+    });
 
     await new Promise<void>((resolve, reject) => {
       const onOpen = () => {
@@ -109,7 +123,9 @@ export class DerivClient {
               }
               // send ping
               (this.ws as any).ping?.();
-            } catch { /* ignore */ }
+            } catch {
+              /* ignore */
+            }
           }, 25_000);
         }
         resolve();
@@ -130,7 +146,10 @@ export class DerivClient {
         this.ws.close();
       }
     } finally {
-      if (this.heartbeat) { clearInterval(this.heartbeat); this.heartbeat = undefined; }
+      if (this.heartbeat) {
+        clearInterval(this.heartbeat);
+        this.heartbeat = undefined;
+      }
       this.ws = null;
       this.isOpen = false;
     }
@@ -138,7 +157,9 @@ export class DerivClient {
 
   // NEW: reconnect helper (rotate endpoint and re-authorize)
   private async reconnect(reason?: string) {
-    try { await this.disconnect(); } catch {}
+    try {
+      await this.disconnect();
+    } catch {}
     // move to next endpoint for the next connect attempt
     this.endpointIndex = (this.endpointIndex + 1) % WS_ENDPOINTS.length;
     await this.connect();
@@ -164,7 +185,7 @@ export class DerivClient {
   // NEW: send with retry (safeToRetry guards order placement)
   private async sendWithRetry<T = any>(
     payload: Record<string, any>,
-    opts?: { timeoutMs?: number; retries?: number; retryDelayMs?: number; safeToRetry?: boolean }
+    opts?: { timeoutMs?: number; retries?: number; retryDelayMs?: number; safeToRetry?: boolean },
   ): Promise<T> {
     const timeoutMs = opts?.timeoutMs ?? 15000;
     const retries = Math.max(0, opts?.retries ?? 2);
@@ -187,7 +208,7 @@ export class DerivClient {
         }
         if (attempt < retries && (isTimeout || isConn)) {
           await this.reconnect(msg).catch(() => void 0);
-          await new Promise(r => setTimeout(r, retryDelayMs * (attempt + 1)));
+          await new Promise((r) => setTimeout(r, retryDelayMs * (attempt + 1)));
           continue;
         }
         break;
@@ -196,15 +217,60 @@ export class DerivClient {
     throw lastErr;
   }
 
+  /**
+   * Validate a Deriv API token.
+   * This method exists because server routes call `c.validateToken(...)`.
+   */
+  async validateToken(token: string): Promise<{
+    ok: true;
+    loginid: string | null;
+    balance: number | null;
+    currency: string | null;
+    raw: any;
+  }> {
+    const t = String(token ?? "").trim();
+    if (!t) throw new Error("Token required");
+
+    // Use a separate client so we don't disturb any existing authorized session on `this`.
+    const tmp = new DerivClient();
+
+    try {
+      await tmp.connect();
+
+      const res = await tmp.sendWithRetry<any>(
+        { authorize: t },
+        { timeoutMs: 20_000, retries: 2, retryDelayMs: 600, safeToRetry: true },
+      );
+
+      if (res?.error) throw new Error(res.error.message || "Deriv authorize error");
+
+      const a = res?.authorize ?? null;
+      const balNum = Number(a?.balance ?? NaN);
+
+      return {
+        ok: true,
+        loginid: a?.loginid ?? null,
+        balance: Number.isFinite(balNum) ? balNum : null,
+        currency: (a?.currency ?? null) as string | null,
+        raw: res,
+      };
+    } finally {
+      await tmp.disconnect().catch(() => void 0);
+    }
+  }
+
   // Raw ticks helper
   private async getTicks(symbol: string, count: number) {
     // Increased timeout + retries (safe to retry)
-    const res = await this.sendWithRetry<any>({
-      ticks_history: symbol,
-      end: "latest",
-      count: Number(count),
-      style: "ticks",
-    }, { timeoutMs: 30_000, retries: 2, retryDelayMs: 700, safeToRetry: true });
+    const res = await this.sendWithRetry<any>(
+      {
+        ticks_history: symbol,
+        end: "latest",
+        count: Number(count),
+        style: "ticks",
+      },
+      { timeoutMs: 30_000, retries: 2, retryDelayMs: 700, safeToRetry: true },
+    );
     if (res?.error) throw new Error(res.error.message || "Deriv ticks error");
     const prices: number[] = res?.history?.prices ?? [];
     const times: number[] = res?.history?.times ?? [];
@@ -218,15 +284,18 @@ export class DerivClient {
   async candles(symbol: string, granularitySec: number, count: number) {
     if (granularitySec >= 60) {
       // Increased timeout + retries (safe)
-      const res = await this.sendWithRetry<any>({
-        ticks_history: symbol,
-        end: "latest",
-        count: Number(count),
-        start: 1,
-        style: "candles",
-        granularity: Number(granularitySec),
-        adjust_start_time: 1,
-      }, { timeoutMs: 30_000, retries: 2, retryDelayMs: 700, safeToRetry: true });
+      const res = await this.sendWithRetry<any>(
+        {
+          ticks_history: symbol,
+          end: "latest",
+          count: Number(count),
+          start: 1,
+          style: "candles",
+          granularity: Number(granularitySec),
+          adjust_start_time: 1,
+        },
+        { timeoutMs: 30_000, retries: 2, retryDelayMs: 700, safeToRetry: true },
+      );
       if (res?.error) throw new Error(res.error.message || "Deriv candles error");
       const candles = res?.candles;
       if (!Array.isArray(candles)) throw new Error("No candles in response");
@@ -246,9 +315,7 @@ export class DerivClient {
     }
 
     const sortedSeconds = Array.from(bySecond.keys()).sort((a, b) => a - b);
-    const lastSec = sortedSeconds.length
-      ? sortedSeconds[sortedSeconds.length - 1]
-      : Math.floor(ticks[ticks.length - 1].epoch);
+    const lastSec = sortedSeconds.length ? sortedSeconds[sortedSeconds.length - 1] : Math.floor(ticks[ticks.length - 1].epoch);
     const firstNeeded = lastSec - (count - 1);
 
     const result: Array<{ epoch: number; open: number; high: number; low: number; close: number; volume: number }> = [];
@@ -304,16 +371,19 @@ export class DerivClient {
     if (!unit) throw new Error("buyRiseFall: duration_unit required");
 
     // Proposal: safe to retry
-    const proposal = await this.sendWithRetry<any>({
-      proposal: 1,
-      amount: amt,
-      basis: "stake",
-      contract_type: side,
-      currency,
-      duration: dur,
-      duration_unit: unit,
-      symbol,
-    }, { timeoutMs: 20_000, retries: 2, retryDelayMs: 600, safeToRetry: true });
+    const proposal = await this.sendWithRetry<any>(
+      {
+        proposal: 1,
+        amount: amt,
+        basis: "stake",
+        contract_type: side,
+        currency,
+        duration: dur,
+        duration_unit: unit,
+        symbol,
+      },
+      { timeoutMs: 20_000, retries: 2, retryDelayMs: 600, safeToRetry: true },
+    );
 
     const proposal_id = proposal?.proposal?.id;
     if (!proposal_id) throw new Error("No proposal_id from Deriv");
@@ -324,9 +394,15 @@ export class DerivClient {
 
   // Snapshot current state for a contract (returns is_sold, buy_price, sell_price, profit, etc.)
   async openContract(contractId: number | string) {
-    const res = await this.sendWithRetry<any>({ proposal_open_contract: 1, contract_id: contractId }, {
-      timeoutMs: 20_000, retries: 2, retryDelayMs: 600, safeToRetry: true,
-    });
+    const res = await this.sendWithRetry<any>(
+      { proposal_open_contract: 1, contract_id: contractId },
+      {
+        timeoutMs: 20_000,
+        retries: 2,
+        retryDelayMs: 600,
+        safeToRetry: true,
+      },
+    );
     if (res?.error) throw new Error(res.error.message || "Deriv open_contract error");
     return res?.proposal_open_contract;
   }
@@ -343,7 +419,7 @@ export class DerivClient {
   async activeSymbols(kind: "brief" | "full" = "brief") {
     const res = await this.sendWithRetry<any>(
       { active_symbols: kind, product_type: "basic" },
-      { timeoutMs: 20_000, retries: 2, retryDelayMs: 600, safeToRetry: true }
+      { timeoutMs: 20_000, retries: 2, retryDelayMs: 600, safeToRetry: true },
     );
     if (res?.error) throw new Error(res.error.message || "Deriv active_symbols error");
     const arr = res?.active_symbols;

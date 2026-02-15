@@ -51,6 +51,50 @@ function getOrigin(req: any) {
   return `${proto}://${host}`;
 }
 
+// Safely decrypt secrets to avoid crashes if key rotated or data corrupt
+function safeDecrypt<T = any>(enc: unknown): T | null {
+  try {
+    return decryptJson(enc as string) as T;
+  } catch {
+    return null;
+  }
+}
+
+// DerivClient compatibility: some versions expose `authorize()` not `validateToken()`
+async function derivValidateToken(token: string): Promise<any> {
+  const c = new DerivClient();
+
+  const validateFn: undefined | ((t: string) => Promise<any>) =
+    (c as any).validateToken?.bind(c) ??
+    (c as any).authorizeToken?.bind(c) ??
+    (c as any).authorize?.bind(c) ??
+    (c as any).validate?.bind(c);
+
+  if (!validateFn) {
+    throw new Error("DerivClient missing validateToken/authorize/validate method");
+  }
+
+  try {
+    if (typeof (c as any).connect === "function") {
+      await (c as any).connect().catch(() => void 0);
+    }
+    const info = await validateFn(token);
+
+    // Normalize authorize payloads if needed
+    const a = (info as any)?.authorize ?? info;
+    return {
+      loginid: a?.loginid ?? a?.user_id ?? null,
+      balance: a?.balance ?? null,
+      currency: a?.currency ?? null,
+      raw: info,
+    };
+  } finally {
+    if (typeof (c as any).disconnect === "function") {
+      await (c as any).disconnect().catch(() => void 0);
+    }
+  }
+}
+
 export function registerRoutes(app: express.Express, hub: WsHub) {
   const router = express.Router();
   const botManager = new BotManager(hub);
@@ -123,93 +167,295 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
     if (error) throw error;
     res.json(api.accounts.list.responses[200].parse(data));
   });
-  // Shared path
   router.get(api.accounts.list.path, requireUser, listAccounts);
-  // Alias used by some clients
-  router.get("/api/accounts/list", requireUser, listAccounts);
+  router.get("/api/accounts/list", requireUser, listAccounts); // alias
 
-  // Aggregated balances per account
-  router.get(
-    "/api/accounts/balances",
+  // ===== Balances =====
+  const listBalances = asyncRoute(async (req, res) => {
+    res.set("Cache-Control", "no-store");
+    const r = req as AuthedRequest;
+
+    const { data: accounts, error } = await supabaseAdmin
+      .from("accounts")
+      .select("id,type,secrets,label,status")
+      .eq("user_id", r.user.id)
+      .eq("status", "active");
+    if (error) throw error;
+
+    const out: Array<{ account_id: string; type: string; balance: number | null; currency: string | null }> = [];
+
+    async function fetchDerivBalance(token: string) {
+      try {
+        const info = await derivValidateToken(token);
+        const bal = typeof info?.balance === "number" ? info.balance : Number(info?.balance ?? NaN);
+        const cur = info?.currency ?? null;
+        return { balance: Number.isFinite(bal) ? bal : null, currency: cur as string | null };
+      } catch {
+        return { balance: null, currency: null };
+      }
+    }
+
+    async function fetchMt5Balance(creds: { server: string; login: string; password: string }) {
+      if (!env.MT5_WORKER_URL) return { balance: null, currency: null };
+      try {
+        const r = await fetch(env.MT5_WORKER_URL.replace(/\/$/, "") + "/mt5/balance", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-api-key": env.MT5_WORKER_API_KEY ?? "" },
+          body: JSON.stringify(creds),
+        });
+        const j = (await r.json().catch(() => ({}))) as any;
+        const bal = typeof j?.balance === "number" ? j.balance : Number(j?.balance ?? NaN);
+        const cur = j?.currency ?? null;
+        return { balance: Number.isFinite(bal) ? bal : null, currency: cur as string | null };
+      } catch {
+        return { balance: null, currency: null };
+      }
+    }
+
+    for (const acc of accounts ?? []) {
+      if (acc.type === "deriv") {
+        const derivEnc = (acc as any)?.secrets?.deriv_token_enc;
+        const dec = derivEnc ? safeDecrypt<any>(derivEnc) : null;
+        const token = dec?.token as string | undefined;
+        const { balance, currency } = token ? await fetchDerivBalance(token) : { balance: null, currency: null };
+        out.push({ account_id: acc.id, type: acc.type, balance, currency });
+      } else if (acc.type === "mt5") {
+        const mt5Enc = (acc as any)?.secrets?.mt5_enc;
+        const dec = mt5Enc ? safeDecrypt<any>(mt5Enc) : null;
+        const creds =
+          dec && dec.server && dec.login && dec.password
+            ? { server: String(dec.server), login: String(dec.login), password: String(dec.password) }
+            : null;
+        const { balance, currency } = creds ? await fetchMt5Balance(creds) : { balance: null, currency: null };
+        out.push({ account_id: acc.id, type: acc.type, balance, currency });
+      } else {
+        out.push({ account_id: acc.id, type: acc.type, balance: null, currency: null });
+      }
+    }
+
+    res.json(out);
+  });
+
+  router.get("/api/accounts/balances", requireUser, listBalances);
+  router.get("/api/account/balances", requireUser, listBalances); // legacy alias
+
+  // Accounts: rename/edit/delete
+  const zRename = z.object({ label: z.string().min(1).max(100) });
+  router.put(
+    "/api/accounts/:id/rename",
     requireUser,
     asyncRoute(async (req, res) => {
-      res.set("Cache-Control", "no-store");
       const r = req as AuthedRequest;
+      const id = String(req.params.id);
+      const body = zRename.parse(req.body);
 
-      const { data: accounts, error } = await supabaseAdmin
+      const { data, error } = await supabaseAdmin
         .from("accounts")
-        .select("id,type,secrets,label,status")
+        .update({ label: body.label })
+        .eq("id", id)
         .eq("user_id", r.user.id)
-        .eq("status", "active");
+        .select("id")
+        .maybeSingle();
       if (error) throw error;
-
-      const out: Array<{ account_id: string; type: string; balance: number | null; currency: string | null }> = [];
-
-      // Deriv balances
-      async function fetchDerivBalance(token: string) {
-        // validateToken typically authorizes and returns balance/currency
-        const c = new DerivClient();
-        try {
-          const info = await c.validateToken(token);
-          const bal = typeof (info as any)?.balance === "number" ? (info as any).balance : Number((info as any)?.balance ?? NaN);
-          const cur = (info as any)?.currency ?? null;
-          return { balance: Number.isFinite(bal) ? bal : null, currency: cur };
-        } catch {
-          return { balance: null, currency: null };
-        }
-      }
-
-      // MT5 balances via worker
-      async function fetchMt5Balance(creds: { server: string; login: string; password: string }) {
-        if (!env.MT5_WORKER_URL) return { balance: null, currency: null };
-        try {
-          const r = await fetch(env.MT5_WORKER_URL.replace(/\/$/, "") + "/mt5/balance", {
-            method: "POST",
-            headers: { "Content-Type": "application/json", "x-api-key": env.MT5_WORKER_API_KEY ?? "" },
-            body: JSON.stringify(creds),
-          });
-          const j = (await r.json().catch(() => ({}))) as any;
-          const bal = typeof j?.balance === "number" ? j.balance : Number(j?.balance ?? NaN);
-          const cur = j?.currency ?? null;
-          return { balance: Number.isFinite(bal) ? bal : null, currency: cur };
-        } catch {
-          return { balance: null, currency: null };
-        }
-      }
-
-      for (const acc of accounts ?? []) {
-        if (acc.type === "deriv") {
-          const derivEnc = (acc as any)?.secrets?.deriv_token_enc;
-          const dec = derivEnc ? (decryptJson(derivEnc) as any) : null;
-          const token = dec?.token as string | undefined;
-          const { balance, currency } = token ? await fetchDerivBalance(token) : { balance: null, currency: null };
-          out.push({ account_id: acc.id, type: acc.type, balance, currency });
-        } else if (acc.type === "mt5") {
-          const mt5Enc = (acc as any)?.secrets?.mt5_enc;
-          const dec = mt5Enc ? (decryptJson(mt5Enc) as any) : null;
-          const creds =
-            dec && dec.server && dec.login && dec.password
-              ? { server: String(dec.server), login: String(dec.login), password: String(dec.password) }
-              : null;
-          const { balance, currency } = creds ? await fetchMt5Balance(creds) : { balance: null, currency: null };
-          out.push({ account_id: acc.id, type: acc.type, balance, currency });
-        } else {
-          out.push({ account_id: acc.id, type: acc.type, balance: null, currency: null });
-        }
-      }
-
-      res.json(out);
+      if (!data) return res.status(404).json({ error: "not_found" });
+      res.json({ ok: true });
     }),
   );
 
+  // POST alias for hosts that block PUT
+  router.post(
+    "/api/accounts/:id/rename",
+    requireUser,
+    asyncRoute(async (req, res) => {
+      const r = req as AuthedRequest;
+      const id = String(req.params.id);
+      const body = zRename.parse(req.body);
+
+      const { data, error } = await supabaseAdmin
+        .from("accounts")
+        .update({ label: body.label })
+        .eq("id", id)
+        .eq("user_id", r.user.id)
+        .select("id")
+        .maybeSingle();
+      if (error) throw error;
+      if (!data) return res.status(404).json({ error: "not_found" });
+      res.json({ ok: true });
+    }),
+  );
+
+  const zDerivUpdate = z.object({ token: z.string().min(1) });
+  router.put(
+    "/api/accounts/:id/deriv",
+    requireUser,
+    asyncRoute(async (req, res) => {
+      const r = req as AuthedRequest;
+      const id = String(req.params.id);
+      const body = zDerivUpdate.parse(req.body);
+
+      const { data: acc } = await supabaseAdmin
+        .from("accounts")
+        .select("id,type,user_id")
+        .eq("id", id)
+        .eq("user_id", r.user.id)
+        .maybeSingle();
+      if (!acc || acc.type !== "deriv") return res.status(400).json({ error: "invalid_account_type" });
+
+      const info = await derivValidateToken(body.token).catch((e: any) => {
+        throw new Error(String(e?.Message ?? e));
+      });
+
+      const enc = encryptJson({
+        token: body.token,
+        validated_at: new Date().toISOString(),
+        loginid: info?.loginid ?? null,
+        balance: info?.balance ?? null,
+        currency: info?.currency ?? null,
+      });
+
+      const { error } = await supabaseAdmin
+        .from("accounts")
+        .update({ secrets: { deriv_token_enc: enc } })
+        .eq("id", id)
+        .eq("user_id", r.user.id);
+      if (error) throw error;
+      res.json({ ok: true });
+    }),
+  );
+
+  // POST alias for hosts that block PUT
+  router.post(
+    "/api/accounts/:id/deriv",
+    requireUser,
+    asyncRoute(async (req, res) => {
+      const r = req as AuthedRequest;
+      const id = String(req.params.id);
+      const body = zDerivUpdate.parse(req.body);
+
+      const { data: acc } = await supabaseAdmin
+        .from("accounts")
+        .select("id,type,user_id")
+        .eq("id", id)
+        .eq("user_id", r.user.id)
+        .maybeSingle();
+      if (!acc || acc.type !== "deriv") return res.status(400).json({ error: "invalid_account_type" });
+
+      const info = await derivValidateToken(body.token).catch((e: any) => {
+        throw new Error(String(e?.Message ?? e));
+      });
+
+      const enc = encryptJson({
+        token: body.token,
+        validated_at: new Date().toISOString(),
+        loginid: info?.loginid ?? null,
+        balance: info?.balance ?? null,
+        currency: info?.currency ?? null,
+      });
+
+      const { error } = await supabaseAdmin
+        .from("accounts")
+        .update({ secrets: { deriv_token_enc: enc } })
+        .eq("id", id)
+        .eq("user_id", r.user.id);
+      if (error) throw error;
+      res.json({ ok: true });
+    }),
+  );
+
+  const zMt5Update = z.object({
+    server: z.string().min(1),
+    login: z.string().min(1),
+    password: z.string().min(1),
+  });
+  router.put(
+    "/api/accounts/:id/mt5",
+    requireUser,
+    asyncRoute(async (req, res) => {
+      const r = req as AuthedRequest;
+      const id = String(req.params.id);
+      const body = zMt5Update.parse(req.body);
+
+      const { data: acc } = await supabaseAdmin
+        .from("accounts")
+        .select("id,type,user_id")
+        .eq("id", id)
+        .eq("user_id", r.user.id)
+        .maybeSingle();
+      if (!acc || acc.type !== "mt5") return res.status(400).json({ error: "invalid_account_type" });
+
+      const enc = encryptJson({ server: body.server, login: body.login, password: body.password });
+      const { error } = await supabaseAdmin
+        .from("accounts")
+        .update({ secrets: { mt5_enc: enc } })
+        .eq("id", id)
+        .eq("user_id", r.user.id);
+      if (error) throw error;
+      res.json({ ok: true });
+    }),
+  );
+
+  // POST alias for hosts that block PUT
+  router.post(
+    "/api/accounts/:id/mt5",
+    requireUser,
+    asyncRoute(async (req, res) => {
+      const r = req as AuthedRequest;
+      const id = String(req.params.id);
+      const body = zMt5Update.parse(req.body);
+
+      const { data: acc } = await supabaseAdmin
+        .from("accounts")
+        .select("id,type,user_id")
+        .eq("id", id)
+        .eq("user_id", r.user.id)
+        .maybeSingle();
+      if (!acc || acc.type !== "mt5") return res.status(400).json({ error: "invalid_account_type" });
+
+      const enc = encryptJson({ server: body.server, login: body.login, password: body.password });
+      const { error } = await supabaseAdmin
+        .from("accounts")
+        .update({ secrets: { mt5_enc: enc } })
+        .eq("id", id)
+        .eq("user_id", r.user.id);
+      if (error) throw error;
+      res.json({ ok: true });
+    }),
+  );
+
+  router.delete(
+    "/api/accounts/:id",
+    requireUser,
+    asyncRoute(async (req, res) => {
+      const r = req as AuthedRequest;
+      const id = String(req.params.id);
+
+      const { error } = await supabaseAdmin.from("accounts").delete().eq("id", id).eq("user_id", r.user.id);
+      if (error) throw error;
+      res.json({ ok: true });
+    }),
+  );
+
+  // POST alias for hosts that block DELETE
+  router.post(
+    "/api/accounts/:id/delete",
+    requireUser,
+    asyncRoute(async (req, res) => {
+      const r = req as AuthedRequest;
+      const id = String(req.params.id);
+      const { error } = await supabaseAdmin.from("accounts").delete().eq("id", id).eq("user_id", r.user.id);
+      if (error) throw error;
+      res.json({ ok: true });
+    }),
+  );
+
+  // ===== Accounts: validation/upsert =====
   router.post(
     api.accounts.validateDeriv.path,
     requireUser,
     asyncRoute(async (req, res) => {
       const body = api.accounts.validateDeriv.input.parse(req.body);
       try {
-        const c = new DerivClient();
-        const info = await c.validateToken(body.token);
+        const info = await derivValidateToken(body.token);
         res.json({ ok: true, ...info });
       } catch (e: any) {
         res.json({ ok: false, message: String(e?.Message ?? e) });
@@ -224,10 +470,15 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
       const r = req as AuthedRequest;
       const body = api.accounts.upsertDeriv.input.parse(req.body);
 
-      const c = new DerivClient();
-      const info = await c.validateToken(body.token);
+      const info = await derivValidateToken(body.token);
 
-      const enc = encryptJson({ token: body.token, validated_at: new Date().toISOString(), ...info });
+      const enc = encryptJson({
+        token: body.token,
+        validated_at: new Date().toISOString(),
+        loginid: info?.loginid ?? null,
+        balance: info?.balance ?? null,
+        currency: info?.currency ?? null,
+      });
 
       const { data, error } = await supabaseAdmin
         .from("accounts")
@@ -297,9 +548,9 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
     res.set("Expires", "0");
 
     const c = new DerivClient();
-    await c.connect().catch(() => void 0);
-    const symbols = await c.activeSymbols("brief").catch(() => []);
-    await c.disconnect().catch(() => void 0);
+    await (c as any).connect?.().catch(() => void 0);
+    const symbols = await (c as any).activeSymbols?.("brief").catch(() => []);
+    await (c as any).disconnect?.().catch(() => void 0);
 
     const mapped = (symbols as any[]).map((s: any) => ({
       symbol: s.symbol,
@@ -313,10 +564,8 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
     res.json(api.instruments.list.responses[200].parse(mapped));
   });
 
-  // Shared route
   router.get(api.instruments.list.path, requireUser, listInstruments);
-  // Alias used by client
-  router.get("/api/instruments/list", requireUser, listInstruments);
+  router.get("/api/instruments/list", requireUser, listInstruments); // alias
 
   router.get(
     api.instruments.enabledForAccount.path,
