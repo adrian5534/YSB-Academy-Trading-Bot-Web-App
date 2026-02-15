@@ -14,8 +14,18 @@ import { env } from "./env";
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
 
+/**
+ * Risk rules (global). Kept for backwards compatibility:
+ * - Accepts older "fixed"/"percent" values
+ * - Normalizes to "fixed_stake" | "percent_balance"
+ */
+const zRiskType = z
+  .enum(["fixed", "fixed_stake", "percent", "percent_balance"])
+  .default("fixed_stake")
+  .transform((v) => (v === "fixed" ? "fixed_stake" : v === "percent" ? "percent_balance" : v));
+
 const zRiskRules = z.object({
-  risk_type: z.string().default("fixed"),
+  risk_type: zRiskType,
   fixed_stake: z.number().nonnegative().default(1),
   percent_risk: z.number().min(0).max(100).default(1),
   max_daily_loss: z.number().min(0).default(0),
@@ -845,7 +855,7 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
 
       const rule = data
         ? {
-            risk_type: data.risk_type,
+            risk_type: data.risk_type ?? undefined,
             fixed_stake: Number(data.fixed_stake),
             percent_risk: Number(data.percent_risk),
             max_daily_loss: Number(data.max_daily_loss),
@@ -857,8 +867,9 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
             adaptive_step: Number(data.adaptive_step),
             adaptive_lookback: Number(data.adaptive_lookback),
           }
-        : zRiskRules.parse({});
+        : {};
 
+      // returns canonical risk_type: "fixed_stake" | "percent_balance"
       res.json(zRiskRules.parse(rule));
     }),
   );
@@ -870,7 +881,9 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
       const r = req as AuthedRequest;
       const body = zRiskRules.parse(req.body);
 
-      const { error } = await supabaseAdmin.from("risk_rules").upsert({ user_id: r.user.id, ...body }, { onConflict: "user_id" });
+      const { error } = await supabaseAdmin
+        .from("risk_rules")
+        .upsert({ user_id: r.user.id, ...body }, { onConflict: "user_id" });
       if (error) throw error;
 
       res.json({ ok: true });

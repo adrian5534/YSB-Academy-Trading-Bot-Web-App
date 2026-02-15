@@ -16,8 +16,36 @@ export type FieldDescriptor = {
 export const EXECUTION_FIELDS: FieldDescriptor[] = [
   { key: "stake", label: "Stake (USD)", type: "number", min: 1, step: 1, default: 250, category: "execution" },
   { key: "duration", label: "Duration", type: "number", min: 1, step: 1, default: 5, category: "execution" },
-  { key: "duration_unit", label: "Duration Unit", type: "select", options: ["t", "m", "h", "d"], default: "m", category: "execution" },
-  { key: "max_open_trades", label: "Max open trades", type: "number", min: 1, default: 5, category: "execution" },
+  {
+    key: "duration_unit",
+    label: "Duration Unit",
+    type: "select",
+    options: ["t", "m", "h", "d"],
+    default: "m",
+    category: "execution",
+  },
+
+  // Execution/risk controls (per-bot when stored in bot params)
+  {
+    key: "max_open_trades",
+    label: "Max open trades",
+    type: "number",
+    min: 1,
+    step: 1,
+    default: 5,
+    category: "execution",
+    description: "Maximum number of simultaneous open trades for this bot.",
+  },
+  {
+    key: "max_daily_loss",
+    label: "Max daily loss (USD)",
+    type: "number",
+    min: 0,
+    step: 1,
+    default: 0,
+    category: "execution",
+    description: "Set to 0 to disable. When exceeded, the bot should stop opening new trades for the day.",
+  },
 ];
 
 export const STRATEGY_SETTINGS: Record<string, FieldDescriptor[]> = {

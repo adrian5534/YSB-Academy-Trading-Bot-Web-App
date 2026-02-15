@@ -34,12 +34,11 @@ type BotCfg = {
 };
 
 // Global risk rules (applies to ALL bots/runs for the user)
-// max_daily_loss: set to 0 to disable (server supports this)
 type RiskRules = {
   risk_type?: "fixed_stake" | "percent_balance";
   fixed_stake?: number;
   percent_risk?: number;
-  max_daily_loss?: number;
+  max_daily_loss?: number; // set to 0 to disable
   max_drawdown?: number;
   max_open_trades?: number;
   adaptive_enabled?: boolean;
@@ -79,7 +78,7 @@ export default function BotCenter() {
   const [bots, setBots] = usePersistedState<BotCfg[]>("bot:configs", []);
   const [editingBotId, setEditingBotId] = reactUseState<string | null>(null);
 
-  // ✅ Risk settings state (global for user)
+  // ✅ Risk settings state (global, but edited from the bot settings modal)
   const [risk, setRisk] = reactUseState<RiskRules | null>(null);
   const [savingRisk, setSavingRisk] = reactUseState(false);
   const [lastMaxDailyLoss, setLastMaxDailyLoss] = reactUseState<number>(50);
@@ -137,7 +136,7 @@ export default function BotCenter() {
 
         setRisk(j ?? {});
       } catch {
-        // keep risk card hidden if endpoint fails
+        // keep risk UI hidden in modal if endpoint fails
         if (alive) setRisk(null);
       }
     })();
@@ -424,8 +423,6 @@ export default function BotCenter() {
     }
   };
 
-  const maxDailyLossEnabled = Number(risk?.max_daily_loss ?? 0) > 0;
-
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -440,75 +437,6 @@ export default function BotCenter() {
         </span>
       </div>
       <div className="text-sm text-muted-foreground">Manage strategy & execution</div>
-
-      {/* ✅ Global risk settings */}
-      {risk && (
-        <div className="rounded-2xl border border-border bg-card p-4">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <div className="font-semibold">Risk limits</div>
-              <div className="text-sm text-muted-foreground">
-                Global (applies to all bots). If enabled, the server will block new trades when the limit is reached.
-              </div>
-            </div>
-            <button
-              type="button"
-              disabled={savingRisk}
-              onClick={() => saveRisk(risk)}
-              className="rounded-lg bg-ysbPurple px-3 py-2 text-sm font-semibold text-ysbYellow hover:opacity-90 disabled:opacity-50"
-              title="Save risk limits"
-            >
-              Save
-            </button>
-          </div>
-
-          <div className="mt-4 grid gap-3 md:grid-cols-3 items-end">
-            <div className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={maxDailyLossEnabled}
-                onChange={(e) => {
-                  const enabled = e.target.checked;
-                  const current = Number(risk?.max_daily_loss ?? 0);
-
-                  if (enabled) {
-                    const nextVal = lastMaxDailyLoss > 0 ? lastMaxDailyLoss : 50;
-                    setRisk((r) => ({ ...(r ?? {}), max_daily_loss: nextVal }));
-                  } else {
-                    if (current > 0) setLastMaxDailyLoss(current);
-                    setRisk((r) => ({ ...(r ?? {}), max_daily_loss: 0 }));
-                  }
-                }}
-              />
-              <label className="text-sm">Enable max daily loss</label>
-            </div>
-
-            <div>
-              <label className="block text-sm mb-1">Max daily loss ($)</label>
-              <input
-                type="number"
-                min={0}
-                step={1}
-                disabled={!maxDailyLossEnabled}
-                className="w-full rounded-lg border border-border bg-background px-3 py-2 disabled:opacity-50"
-                value={Number(risk?.max_daily_loss ?? 0)}
-                onChange={(e) => {
-                  const v = Math.max(0, Number(e.target.value));
-                  if (v > 0) setLastMaxDailyLoss(v);
-                  setRisk((r) => ({ ...(r ?? {}), max_daily_loss: v }));
-                }}
-              />
-              <div className="mt-1 text-xs text-muted-foreground">
-                Set to <span className="font-mono">0</span> to disable.
-              </div>
-            </div>
-
-            <div className="text-xs text-muted-foreground md:text-right">
-              Your logs show: <span className="font-mono">risk block: max daily loss reached</span>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Cards grid: responsive left-to-right */}
       <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
@@ -824,7 +752,7 @@ export default function BotCenter() {
         </button>
       </div>
 
-      {/* Live logs moved below, full-width responsive */}
+      {/* Live logs */}
       <div className="rounded-2xl border border-border bg-card p-4">
         <div className="flex items-center justify-between mb-2">
           <div className="font-semibold">Live logs</div>
@@ -860,6 +788,10 @@ export default function BotCenter() {
       {showSettings && (
         <StrategySettingsModal
           params={editingBotId ? (bots.find((b: any) => b.id === editingBotId)?.params ?? params) : params}
+          risk={risk}
+          savingRisk={savingRisk}
+          lastMaxDailyLoss={lastMaxDailyLoss}
+          setLastMaxDailyLoss={setLastMaxDailyLoss}
           fields={(
             STRATEGY_SETTINGS[
               ((editingBotId ? bots.find((b: any) => b.id === editingBotId)?.strategy_id : strategyId) ?? "") as any
@@ -869,11 +801,12 @@ export default function BotCenter() {
             setShowSettings(false);
             setEditingBotId(null);
           }}
-          onSave={async (next) => {
+          onSave={async (nextParams, nextRisk) => {
+            // Save bot params (per-card or primary)
             if (editingBotId) {
               const b = bots.find((x: any) => x.id === editingBotId);
               if (b) {
-                updateBot(editingBotId, { params: next });
+                updateBot(editingBotId, { params: nextParams });
 
                 // Persist without enabling globally
                 await apiFetch(api.strategies.setSettings.path, {
@@ -883,15 +816,21 @@ export default function BotCenter() {
                     symbol: b.symbol,
                     timeframe: b.timeframe,
                     strategy_id: b.strategy_id,
-                    params: next,
+                    params: nextParams,
                     enabled: false,
                   }),
                 }).catch(() => void 0);
               }
             } else {
-              setParams(next);
-              await persistSettings(next, false);
+              setParams(nextParams);
+              await persistSettings(nextParams, false);
             }
+
+            // Save global risk rules (edited from modal)
+            if (nextRisk) {
+              await saveRisk(nextRisk);
+            }
+
             setShowSettings(false);
             setEditingBotId(null);
           }}
@@ -906,6 +845,10 @@ function StrategySettingsModal({
   onSave,
   onClose,
   fields,
+  risk,
+  savingRisk,
+  lastMaxDailyLoss,
+  setLastMaxDailyLoss,
 }: {
   params: StrategyParams;
   fields: {
@@ -918,15 +861,46 @@ function StrategySettingsModal({
     options?: string[];
     default?: string | number | boolean;
   }[];
-  onSave: (p: StrategyParams) => void;
+  risk: RiskRules | null;
+  savingRisk: boolean;
+  lastMaxDailyLoss: number;
+  setLastMaxDailyLoss: (n: number) => void;
+  onSave: (p: StrategyParams, nextRisk?: RiskRules) => void | Promise<void>;
   onClose: () => void;
 }) {
   const [form, setForm] = reactUseState<StrategyParams>(params);
+
+  // Modal-local risk UI state (global rule edited here)
+  const [mdlEnabled, setMdlEnabled] = reactUseState<boolean>(Number(risk?.max_daily_loss ?? 0) > 0);
+  const [mdlValue, setMdlValue] = reactUseState<number>(Math.max(0, Number(risk?.max_daily_loss ?? 0) || lastMaxDailyLoss || 50));
 
   // keep modal in sync when opening for a different bot
   useEffect(() => {
     setForm(params);
   }, [params]);
+
+  // keep risk UI in sync if risk loads after modal opens
+  useEffect(() => {
+    const current = Number(risk?.max_daily_loss ?? 0);
+    const enabled = Number.isFinite(current) && current > 0;
+    setMdlEnabled(enabled);
+
+    if (enabled) {
+      setMdlValue(Math.max(0, current));
+      if (current > 0) setLastMaxDailyLoss(current);
+    } else {
+      // keep whatever last value the user had
+      setMdlValue((v) => (v > 0 ? v : Math.max(0, lastMaxDailyLoss || 50)));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [risk]);
+
+  const buildNextRisk = (): RiskRules | undefined => {
+    if (!risk) return undefined;
+    const nextVal = mdlEnabled ? Math.max(0, Number(mdlValue) || 0) : 0;
+    if (nextVal > 0) setLastMaxDailyLoss(nextVal);
+    return { ...(risk ?? {}), max_daily_loss: nextVal };
+  };
 
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4">
@@ -1034,18 +1008,85 @@ function StrategySettingsModal({
               onChange={(e) => setForm({ ...form, max_open_trades: Math.max(1, Number(e.target.value)) })}
             />
           </div>
+
+          {/* ✅ Max Daily Loss moved HERE (global rule, but edited inside bot settings) */}
+          {risk && (
+            <div className="rounded-xl border border-border bg-background p-3">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-sm font-semibold">Risk limits</div>
+                  <div className="text-xs text-muted-foreground">
+                    Global (applies to all bots). When hit, the server blocks new trades.
+                  </div>
+                </div>
+                {savingRisk ? (
+                  <div className="text-xs text-muted-foreground">Saving…</div>
+                ) : null}
+              </div>
+
+              <div className="mt-3 grid gap-3 md:grid-cols-3 items-end">
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={mdlEnabled}
+                    onChange={(e) => {
+                      const enabled = e.target.checked;
+                      setMdlEnabled(enabled);
+
+                      if (enabled) {
+                        const nextVal = (lastMaxDailyLoss > 0 ? lastMaxDailyLoss : 50) || 50;
+                        setMdlValue(nextVal);
+                      } else {
+                        const current = Math.max(0, Number(mdlValue) || 0);
+                        if (current > 0) setLastMaxDailyLoss(current);
+                        setMdlValue(0);
+                      }
+                    }}
+                  />
+                  <label className="text-sm">Enable max daily loss</label>
+                </div>
+
+                <div>
+                  <label className="block text-sm mb-1">Max daily loss ($)</label>
+                  <input
+                    type="number"
+                    min={0}
+                    step={1}
+                    disabled={!mdlEnabled}
+                    className="w-full rounded-lg border border-border bg-card px-3 py-2 disabled:opacity-50"
+                    value={mdlEnabled ? Math.max(0, Number(mdlValue) || 0) : 0}
+                    onChange={(e) => {
+                      const v = Math.max(0, Number(e.target.value) || 0);
+                      setMdlValue(v);
+                      if (v > 0) setLastMaxDailyLoss(v);
+                    }}
+                  />
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    Set to <span className="font-mono">0</span> to disable.
+                  </div>
+                </div>
+
+                <div className="text-xs text-muted-foreground md:text-right">
+                  Logs show: <span className="font-mono">risk block: max daily loss reached</span>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="mt-5 flex items-center justify-end gap-2">
           <button
             className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground"
             onClick={onClose}
+            type="button"
           >
             Cancel
           </button>
           <button
-            className="rounded-lg bg-ysbPurple px-3 py-2 font-semibold text-ysbYellow hover:opacity-90"
-            onClick={() => onSave(form)}
+            className="rounded-lg bg-ysbPurple px-3 py-2 font-semibold text-ysbYellow hover:opacity-90 disabled:opacity-50"
+            disabled={savingRisk}
+            onClick={() => onSave(form, buildNextRisk())}
+            type="button"
           >
             Save Changes
           </button>

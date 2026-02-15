@@ -17,7 +17,36 @@ export type FieldDescriptor = {
 export const EXECUTION_FIELDS: FieldDescriptor[] = [
   { key: "stake", label: "Stake (USD)", type: "number", min: 1, step: 1, default: 250, category: "execution" },
   { key: "duration", label: "Duration", type: "number", min: 1, step: 1, default: 5, category: "execution" },
-  { key: "duration_unit", label: "Duration Unit", type: "select", options: ["t", "m", "h", "d"], default: "m", category: "execution" },
+  {
+    key: "duration_unit",
+    label: "Duration Unit",
+    type: "select",
+    options: ["t", "m", "h", "d"],
+    default: "m",
+    category: "execution",
+  },
+
+  // Execution/risk controls (per-bot when stored in bot params)
+  {
+    key: "max_open_trades",
+    label: "Max open trades",
+    type: "number",
+    min: 1,
+    step: 1,
+    default: 5,
+    category: "execution",
+    description: "Maximum number of simultaneous open trades for this bot.",
+  },
+  {
+    key: "max_daily_loss",
+    label: "Max daily loss (USD)",
+    type: "number",
+    min: 0,
+    step: 1,
+    default: 0,
+    category: "execution",
+    description: "Set to 0 to disable. When exceeded, the bot should stop opening new trades for the day.",
+  },
 ];
 
 export const STRATEGY_SETTINGS: Record<string, FieldDescriptor[]> = {
@@ -72,13 +101,12 @@ export function getEditableFields(strategyId: string): FieldDescriptor[] {
 }
 
 /**
- * Helper to build defaults for a strategy (merges strategy defaults + execution defaults).
- * Use in BotCenter when populating the form.
+ * Helper to build defaults for a strategy.
+ * Note: execution defaults are provided separately in EXECUTION_FIELDS.
  */
 export function getDefaultParams(strategyId: string): Record<string, any> {
   const fields = getEditableFields(strategyId);
   const out: Record<string, any> = {};
   for (const f of fields) out[f.key] = f.default;
-  // attach execution defaults separately if desired (BotCenter may handle execution fields in UI)
   return out;
 }
