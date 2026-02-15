@@ -17,6 +17,7 @@ import { motion } from "framer-motion";
 import { useSession } from "@/hooks/use-auth";
 import { useProfile } from "@/hooks/use-profile";
 import { useToast } from "@/hooks/use-toast";
+import { useEffect, useState } from "react";
 
 const nav = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
@@ -41,8 +42,25 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const { profile } = useProfile(session?.user?.id);
   const { toast } = useToast();
 
+  const [drawerOpen, setDrawerOpen] = useState(false);
+
   const isAdmin = profile?.role === "admin";
   const items = isAdmin ? nav : nav.filter((n) => n.href !== "/admin");
+
+  // Close drawer on route change
+  useEffect(() => {
+    setDrawerOpen(false);
+  }, [loc]);
+
+  // Escape closes drawer
+  useEffect(() => {
+    if (!drawerOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setDrawerOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [drawerOpen]);
 
   const signOutLocal = async () => {
     await supabase.auth.signOut({ scope: "local" });
@@ -90,8 +108,80 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     }
   };
 
+  const NavContent = ({ onNavigate }: { onNavigate?: () => void }) => (
+    <>
+      <nav className="app-shell__nav">
+        {items.map((n) => {
+          const active = loc === n.href;
+          const Icon = n.icon;
+          return (
+            <Link key={n.href} href={n.href}>
+              <a
+                onClick={onNavigate}
+                className={cn(
+                  "app-shell__navItem",
+                  "rounded-lg px-3 py-2 text-sm hover:bg-muted/40",
+                  active ? "bg-muted/60" : ""
+                )}
+              >
+                <span className="inline-flex items-center gap-2">
+                  <Icon size={16} className={active ? "text-ysbYellow" : "text-muted-foreground"} />
+                  {active ? (
+                    <motion.span layoutId="nav" className="text-foreground whitespace-nowrap">
+                      {n.label}
+                    </motion.span>
+                  ) : (
+                    <span className="text-muted-foreground whitespace-nowrap">{n.label}</span>
+                  )}
+                </span>
+              </a>
+            </Link>
+          );
+        })}
+      </nav>
+
+      <div className="app-shell__actions">
+        <button
+          onClick={() => void signOutLocal()}
+          className="w-full rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground"
+        >
+          Sign out
+        </button>
+
+        <button
+          onClick={() => void signOutEverywhere()}
+          className="w-full rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground"
+        >
+          Sign out everywhere
+        </button>
+      </div>
+    </>
+  );
+
   return (
     <div className="app-shell">
+      {/* Mobile topbar */}
+      <header className="app-shell__topbar border-border bg-card">
+        <div className="flex items-center gap-2">
+          <div className="h-9 w-9 rounded-lg bg-ysbPurple grid place-items-center text-ysbYellow font-bold">Y</div>
+          <div className="leading-tight">
+            <div className="font-semibold">YSB Academy</div>
+            <div className="text-xs text-muted-foreground">Trading Bot</div>
+          </div>
+        </div>
+
+        <button
+          type="button"
+          className="app-shell__hamburger"
+          aria-label={drawerOpen ? "Close menu" : "Open menu"}
+          aria-expanded={drawerOpen}
+          onClick={() => setDrawerOpen((v) => !v)}
+        >
+          <span className="app-shell__hamburgerLines" aria-hidden="true" />
+        </button>
+      </header>
+
+      {/* Desktop sidebar */}
       <aside className="app-shell__aside border-border bg-card">
         <div className="app-shell__header">
           <div className="flex items-center gap-2">
@@ -103,51 +193,38 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </div>
         </div>
 
-        <nav className="app-shell__nav">
-          {items.map((n) => {
-            const active = loc === n.href;
-            const Icon = n.icon;
-            return (
-              <Link key={n.href} href={n.href}>
-                <a
-                  className={cn(
-                    "app-shell__navItem",
-                    "rounded-lg px-3 py-2 text-sm hover:bg-muted/40",
-                    active ? "bg-muted/60" : ""
-                  )}
-                >
-                  <span className="inline-flex items-center gap-2">
-                    <Icon size={16} className={active ? "text-ysbYellow" : "text-muted-foreground"} />
-                    {active ? (
-                      <motion.span layoutId="nav" className="text-foreground whitespace-nowrap">
-                        {n.label}
-                      </motion.span>
-                    ) : (
-                      <span className="text-muted-foreground whitespace-nowrap">{n.label}</span>
-                    )}
-                  </span>
-                </a>
-              </Link>
-            );
-          })}
-        </nav>
+        <NavContent />
+      </aside>
 
-        <div className="app-shell__actions">
-          <button
-            onClick={() => void signOutLocal()}
-            className="w-full rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground"
-          >
-            Sign out
-          </button>
+      {/* Mobile drawer */}
+      <div
+        className={cn("app-shell__drawerOverlay", drawerOpen ? "is-open" : "")}
+        onClick={() => setDrawerOpen(false)}
+      />
+      <div className={cn("app-shell__drawer", drawerOpen ? "is-open" : "")} role="dialog" aria-modal="true">
+        <div className="app-shell__drawerHeader">
+          <div className="flex items-center gap-2">
+            <div className="h-9 w-9 rounded-lg bg-ysbPurple grid place-items-center text-ysbYellow font-bold">Y</div>
+            <div className="leading-tight">
+              <div className="font-semibold">YSB Academy</div>
+              <div className="text-xs text-muted-foreground">Trading Bot</div>
+            </div>
+          </div>
 
           <button
-            onClick={() => void signOutEverywhere()}
-            className="w-full rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground"
+            type="button"
+            className="app-shell__drawerClose"
+            aria-label="Close menu"
+            onClick={() => setDrawerOpen(false)}
           >
-            Sign out everywhere
+            ×
           </button>
         </div>
-      </aside>
+
+        <div className="app-shell__drawerBody">
+          <NavContent onNavigate={() => setDrawerOpen(false)} />
+        </div>
+      </div>
 
       <main className="app-shell__main">{children}</main>
     </div>
