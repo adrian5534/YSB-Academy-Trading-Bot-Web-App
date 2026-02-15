@@ -4,17 +4,10 @@
 
 :root { color-scheme: dark; }
 
-html,
-body {
-  height: 100%;
-  overflow-x: hidden;
-}
+html, body { height: 100%; overflow-x: hidden; }
+body.drawer-open { overflow: hidden; }
 
-body.drawer-open {
-  overflow: hidden;
-}
-
-/* ===== AppShell (mobile-first) ===== */
+/* Base layout */
 .app-shell {
   min-height: 100vh;
   display: flex;
@@ -22,7 +15,9 @@ body.drawer-open {
   overflow-x: hidden;
 }
 
-/* Mobile topbar (<992px) */
+.app-shell__main { padding: 16px; }
+
+/* Mobile topbar (visible < 992px) */
 .app-shell__topbar {
   position: sticky;
   top: 0;
@@ -33,7 +28,7 @@ body.drawer-open {
   gap: 12px;
   padding: 12px 14px;
   border-bottom-width: 1px;
-  border-color: rgba(255, 255, 255, 0.10);
+  border-color: rgba(255,255,255,0.10);
 }
 
 /* Hamburger */
@@ -41,23 +36,21 @@ body.drawer-open {
   height: 40px;
   width: 44px;
   border-radius: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255,255,255,0.12);
   background: transparent;
   display: grid;
   place-items: center;
 }
-.app-shell__hamburger:hover {
-  background: rgba(255, 255, 255, 0.04);
-}
+.app-shell__hamburger:hover { background: rgba(255,255,255,0.04); }
 
-/* 3 lines */
+/* ✅ Proper 3-line hamburger (middle line is the span; top/bottom are pseudos) */
 .app-shell__hamburgerLines {
   position: relative;
   display: inline-block;
   width: 18px;
-  height: 2px; /* middle line */
+  height: 2px;                 /* middle line */
   border-radius: 2px;
-  background: rgba(255, 255, 255, 0.78);
+  background: rgba(255,255,255,0.75);
 }
 .app-shell__hamburgerLines::before,
 .app-shell__hamburgerLines::after {
@@ -67,35 +60,33 @@ body.drawer-open {
   width: 18px;
   height: 2px;
   border-radius: 2px;
-  background: rgba(255, 255, 255, 0.78);
+  background: rgba(255,255,255,0.75);
 }
-.app-shell__hamburgerLines::before { top: -6px; }
-.app-shell__hamburgerLines::after { top: 6px; }
+.app-shell__hamburgerLines::before { top: -6px; } /* top line */
+.app-shell__hamburgerLines::after { top: 6px; }   /* bottom line */
 
-/* Desktop sidebar hidden on mobile */
-.app-shell__aside {
-  display: none;
-}
+/* Desktop sidebar hidden by default (mobile-first) */
+.app-shell__aside { display: none; }
 
 /* Drawer */
 .app-shell__drawerOverlay {
   position: fixed;
   inset: 0;
   z-index: 45;
-  background: rgba(0, 0, 0, 0.55);
+  background: rgba(0,0,0,0.55);
 }
 
 .app-shell__drawer {
   position: fixed;
   top: 0;
   left: 0;
-  z-index: 50;
   height: 100vh;
   width: min(86vw, 360px);
+  z-index: 50;
   background: hsl(222 47% 11%);
   border-right-width: 1px;
-  border-color: rgba(255, 255, 255, 0.10);
-  box-shadow: 18px 0 50px rgba(0, 0, 0, 0.55);
+  border-color: rgba(255,255,255,0.10);
+  box-shadow: 18px 0 50px rgba(0,0,0,0.55);
 }
 
 .app-shell__drawerHeader {
@@ -104,21 +95,18 @@ body.drawer-open {
   justify-content: space-between;
   gap: 10px;
   padding: 14px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.10);
+  border-bottom: 1px solid rgba(255,255,255,0.10);
 }
 
 .app-shell__drawerClose {
   height: 36px;
   width: 40px;
   border-radius: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255,255,255,0.12);
   background: transparent;
-  color: rgba(255, 255, 255, 0.85);
+  color: rgba(255,255,255,0.85);
   font-size: 22px;
   line-height: 1;
-}
-.app-shell__drawerClose:hover {
-  background: rgba(255, 255, 255, 0.04);
 }
 
 .app-shell__drawerBody {
@@ -128,22 +116,10 @@ body.drawer-open {
   -webkit-overflow-scrolling: touch;
 }
 
-/* Nav spacing under logo */
-.app-shell__header {
-  padding-bottom: 12px;
-  margin-bottom: 10px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-}
-
-.app-shell__nav {
-  display: grid;
-  gap: 6px;
-  margin-top: 8px;
-}
-.app-shell__navItem {
-  display: block;
-  width: 100%;
-}
+/* Nav spacing */
+.app-shell__header { margin-bottom: 10px; }
+.app-shell__nav { display: grid; gap: 6px; margin-top: 8px; }
+.app-shell__navItem { display: block; width: 100%; }
 
 .app-shell__actions {
   margin-top: 12px;
@@ -151,30 +127,19 @@ body.drawer-open {
   gap: 8px;
 }
 
-.app-shell__main {
-  padding: 16px;
-}
-
-/* ===== Breakpoints ===== */
-/* 576px: Small devices (landscape phones) */
+/* Breakpoints */
 @media (min-width: 576px) {
   .app-shell__main { padding: 18px; }
   .app-shell__drawer { width: min(82vw, 380px); }
 }
 
-/* 768px: Medium devices (tablets) */
 @media (min-width: 768px) {
   .app-shell__main { padding: 22px; }
   .app-shell__drawer { width: min(70vw, 420px); }
 }
 
-/* 992px: Large devices (desktops) */
 @media (min-width: 992px) {
-  .app-shell {
-    display: grid;
-    grid-template-columns: 260px 1fr;
-  }
-
+  .app-shell { display: grid; grid-template-columns: 260px 1fr; }
   .app-shell__topbar { display: none; }
 
   .app-shell__aside {
@@ -182,13 +147,12 @@ body.drawer-open {
     min-height: 100vh;
     padding: 16px;
     border-right-width: 1px;
-    border-color: rgba(255, 255, 255, 0.10);
+    border-color: rgba(255,255,255,0.10);
   }
 
   .app-shell__main { padding: 24px; }
 }
 
-/* 1200px: Extra-large devices (wide desktops) */
 @media (min-width: 1200px) {
   .app-shell { grid-template-columns: 280px 1fr; }
   .app-shell__aside { padding: 18px; }
