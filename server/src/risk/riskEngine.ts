@@ -36,6 +36,8 @@ const DEFAULT_RULES = {
 };
 
 const toNum = (v: unknown, fallback: number) => {
+  // ✅ treat null/undefined/empty as missing (use fallback)
+  if (v === null || v === undefined || v === "") return fallback;
   const n = typeof v === "number" ? v : Number(v);
   return Number.isFinite(n) ? n : fallback;
 };
@@ -64,20 +66,33 @@ export async function getRiskRules(userId: string): Promise<RiskRules> {
   return normalized;
 }
 
-export async function canOpenTrade(userId: string): Promise<{ ok: boolean; reason?: string }> {
+type CanOpenTradeOptions = {
+  max_open_trades?: number; // optional override (per-bot)
+};
+
+const toFiniteNumberOrUndefined = (v: unknown): number | undefined => {
+  if (v === null || v === undefined || v === "") return undefined;
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) ? n : undefined;
+};
+
+export async function canOpenTrade(
+  userId: string,
+  opts: CanOpenTradeOptions = {},
+): Promise<{ ok: boolean; reason?: string }> {
   const rules = await getRiskRules(userId);
 
   // realized PnL since UTC day start
   const today = new Date();
   today.setUTCHours(0, 0, 0, 0);
 
-  const { data: trades, error } = await supabaseAdmin
+  const { data: trades, error: tradesError } = await supabaseAdmin
     .from("trades")
     .select("profit,opened_at,closed_at")
     .eq("user_id", userId)
     .gte("opened_at", today.toISOString());
 
-  if (error) throw error;
+  if (tradesError) throw tradesError;
 
   const realized = (trades ?? []).reduce((sum: number, t: any): number => sum + toNum(t?.profit, 0), 0);
 
@@ -86,16 +101,22 @@ export async function canOpenTrade(userId: string): Promise<{ ok: boolean; reaso
     return { ok: false, reason: "max daily loss reached" };
   }
 
-  const { count, error: e2 } = await supabaseAdmin
+  const { count, error: countError } = await supabaseAdmin
     .from("trades")
     .select("id", { count: "exact", head: true })
     .eq("user_id", userId)
     .is("closed_at", null);
 
-  if (e2) throw e2;
+  if (countError) throw countError;
 
-  if ((count ?? 0) >= rules.max_open_trades) {
-    return { ok: false, reason: "max open trades reached" };
+  // Prefer per-bot override, else global rule
+  const override = toFiniteNumberOrUndefined(opts.max_open_trades);
+  const globalLimit = toFiniteNumberOrUndefined((rules as any)?.max_open_trades);
+  const limit = override ?? globalLimit;
+
+  // ✅ treat undefined / <= 0 as “disabled”
+  if (typeof limit === "number" && limit > 0) {
+    if ((count ?? 0) >= limit) return { ok: false, reason: "max open trades reached" };
   }
 
   return { ok: true };

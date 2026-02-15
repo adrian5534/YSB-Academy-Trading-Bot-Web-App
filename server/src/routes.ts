@@ -853,23 +853,24 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
       const { data, error } = await supabaseAdmin.from("risk_rules").select("*").eq("user_id", r.user.id).maybeSingle();
       if (error) throw error;
 
+      const nOrU = (v: any) => (v === null || v === undefined ? undefined : Number(v));
+
       const rule = data
         ? {
             risk_type: data.risk_type ?? undefined,
-            fixed_stake: Number(data.fixed_stake),
-            percent_risk: Number(data.percent_risk),
-            max_daily_loss: Number(data.max_daily_loss),
-            max_drawdown: Number(data.max_drawdown),
-            max_open_trades: Number(data.max_open_trades),
+            fixed_stake: nOrU(data.fixed_stake),
+            percent_risk: nOrU(data.percent_risk),
+            max_daily_loss: nOrU(data.max_daily_loss),
+            max_drawdown: nOrU(data.max_drawdown),
+            max_open_trades: nOrU(data.max_open_trades),
             adaptive_enabled: Boolean(data.adaptive_enabled),
-            adaptive_min_percent: Number(data.adaptive_min_percent),
-            adaptive_max_percent: Number(data.adaptive_max_percent),
-            adaptive_step: Number(data.adaptive_step),
-            adaptive_lookback: Number(data.adaptive_lookback),
+            adaptive_min_percent: nOrU(data.adaptive_min_percent),
+            adaptive_max_percent: nOrU(data.adaptive_max_percent),
+            adaptive_step: nOrU(data.adaptive_step),
+            adaptive_lookback: nOrU(data.adaptive_lookback),
           }
         : {};
 
-      // returns canonical risk_type: "fixed_stake" | "percent_balance"
       res.json(zRiskRules.parse(rule));
     }),
   );

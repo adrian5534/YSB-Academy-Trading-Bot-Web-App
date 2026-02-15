@@ -348,7 +348,8 @@ export class BotManager {
       return;
     }
 
-    const gate = await canOpenTrade(bot.userId);
+    // ✅ also apply the same limit to the global risk gate
+    const gate = await canOpenTrade(bot.userId, { max_open_trades: maxOpenTrades });
     if (!gate.ok) {
       this.hub.log("risk block", { reason: gate.reason, symbol: cfg.symbol });
       return;
