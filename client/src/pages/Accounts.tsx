@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useAccounts, useUpsertDerivAccount, useUpsertMt5Account } from "@/hooks/use-accounts";
 import { useToast } from "@/hooks/use-toast";
 import { useQueryClient } from "@tanstack/react-query";
+import { apiFetch } from "@/lib/api";
 
 export default function Accounts() {
   const { data: accounts } = useAccounts();
@@ -26,9 +27,27 @@ export default function Accounts() {
   const [editLogin, setEditLogin] = useState("");
   const [editPassword, setEditPassword] = useState("");
 
+  async function apiWriteWith405Fallback(url: string, body: any) {
+    try {
+      await apiFetch(url, { method: "PUT", body: JSON.stringify(body) });
+    } catch (e: any) {
+      const msg = String(e?.message ?? e);
+      if (msg.startsWith("405")) {
+        await apiFetch(url, { method: "POST", body: JSON.stringify(body) });
+        return;
+      }
+      throw e;
+    }
+  }
+
   const saveDeriv = async () => {
     try {
-      await upsertDeriv.mutateAsync({ label, token });
+      const t = token.trim();
+      const l = label.trim();
+      if (!l) throw new Error("Label required");
+      if (!t) throw new Error("Token required");
+
+      await upsertDeriv.mutateAsync({ label: l, token: t });
       toast({ title: "Deriv account saved", description: "Token stored encrypted on server." });
       setToken("");
       await qc.invalidateQueries({ queryKey: ["accounts"] });
@@ -39,7 +58,11 @@ export default function Accounts() {
 
   const saveMt5 = async () => {
     try {
-      await upsertMt5.mutateAsync({ label: mt5Label, server, login, password });
+      const l = mt5Label.trim();
+      if (!l) throw new Error("Label required");
+      if (!server.trim() || !login.trim() || !password) throw new Error("Server, login and password required");
+
+      await upsertMt5.mutateAsync({ label: l, server: server.trim(), login: login.trim(), password });
       toast({ title: "MT5 account saved", description: "Validation runs via optional worker." });
       setPassword("");
       await qc.invalidateQueries({ queryKey: ["accounts"] });
@@ -60,24 +83,14 @@ export default function Accounts() {
 
   const submitRename = async (id: string) => {
     try {
-      let r = await fetch(`/api/accounts/${id}/rename`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ label: renameLabel }),
-      });
+      const next = renameLabel.trim();
+      if (!next) throw new Error("Label required");
 
-      // Some hosts block PUT; fall back to POST alias
-      if (r.status === 405) {
-        r = await fetch(`/api/accounts/${id}/rename`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ label: renameLabel }),
-        });
-      }
+      await apiWriteWith405Fallback(`/api/accounts/${id}/rename`, { label: next });
 
-      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error ?? "Rename failed");
       toast({ title: "Renamed", description: "Account label updated." });
       setRenamingId(null);
+      setRenameLabel("");
       await qc.invalidateQueries({ queryKey: ["accounts"] });
     } catch (e: any) {
       toast({ title: "Error", description: String(e.message ?? e), variant: "destructive" });
@@ -106,41 +119,17 @@ export default function Accounts() {
 
   const submitEditSecrets = async (id: string, type: string) => {
     try {
-      let r: Response;
-
       if (type === "deriv") {
-        r = await fetch(`/api/accounts/${id}/deriv`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ token: editToken }),
-        });
-
-        // Some hosts block PUT; fall back to POST alias
-        if (r.status === 405) {
-          r = await fetch(`/api/accounts/${id}/deriv`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ token: editToken }),
-          });
-        }
+        const t = editToken.trim();
+        if (!t) throw new Error("Token required");
+        await apiWriteWith405Fallback(`/api/accounts/${id}/deriv`, { token: t });
       } else {
-        r = await fetch(`/api/accounts/${id}/mt5`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ server: editServer, login: editLogin, password: editPassword }),
-        });
-
-        // Some hosts block PUT; fall back to POST alias
-        if (r.status === 405) {
-          r = await fetch(`/api/accounts/${id}/mt5`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ server: editServer, login: editLogin, password: editPassword }),
-          });
-        }
+        const s = editServer.trim();
+        const l = editLogin.trim();
+        if (!s || !l || !editPassword) throw new Error("Server, login and password required");
+        await apiWriteWith405Fallback(`/api/accounts/${id}/mt5`, { server: s, login: l, password: editPassword });
       }
 
-      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error ?? "Update failed");
       toast({ title: "Updated", description: "Account credentials updated." });
       cancelEditSecrets();
       await qc.invalidateQueries({ queryKey: ["accounts"] });
@@ -152,11 +141,18 @@ export default function Accounts() {
   const removeAccount = async (id: string) => {
     try {
       if (!confirm("Remove this account?")) return;
-      let r = await fetch(`/api/accounts/${id}`, { method: "DELETE" });
-      if (r.status === 405) {
-        r = await fetch(`/api/accounts/${id}/delete`, { method: "POST" });
+
+      try {
+        await apiFetch(`/api/accounts/${id}`, { method: "DELETE" });
+      } catch (e: any) {
+        const msg = String(e?.message ?? e);
+        if (msg.startsWith("405")) {
+          await apiFetch(`/api/accounts/${id}/delete`, { method: "POST" });
+        } else {
+          throw e;
+        }
       }
-      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error ?? "Delete failed");
+
       toast({ title: "Removed", description: "Account deleted." });
       await qc.invalidateQueries({ queryKey: ["accounts"] });
     } catch (e: any) {
