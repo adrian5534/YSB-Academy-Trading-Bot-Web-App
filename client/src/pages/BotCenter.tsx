@@ -11,6 +11,17 @@ import { useKeepAlive } from "@/hooks/use-keep-alive";
 import { usePersistedState } from "@/hooks/use-persisted-state";
 import { useState as reactUseState } from "react";
 
+type DurationUnit = "m" | "h" | "d" | "t";
+
+// execution fields are required, strategy fields are free-form
+type StrategyParams = {
+  stake: number;
+  duration: number;
+  duration_unit: DurationUnit;
+  max_open_trades: number;
+  [k: string]: any;
+};
+
 type BotCfg = {
   id?: string; // present for extra cards
   account_id: string;
@@ -18,7 +29,7 @@ type BotCfg = {
   timeframe: string;
   strategy_id: string;
   mode: "backtest" | "paper" | "live";
-  params: Record<string, any>;
+  params: StrategyParams;
   enabled?: boolean;
 };
 
@@ -38,16 +49,18 @@ export default function BotCenter() {
   const [timeframe, setTimeframe] = usePersistedState<string>("bot:timeframe", "1m");
   const [strategyId, setStrategyId] = usePersistedState<string>("bot:strategyId", "");
   const [mode, setMode] = usePersistedState<"backtest" | "paper" | "live">("bot:mode", "paper");
-  const [params, setParams] = usePersistedState<Record<string, any>>("bot:params", {
+
+  const [params, setParams] = usePersistedState<StrategyParams>("bot:params", {
     stake: 250,
     duration: 5,
-    duration_unit: "m" as "m" | "h" | "d" | "t",
+    duration_unit: "m",
     max_open_trades: 5,
   });
+
   const [showSettings, setShowSettings] = usePersistedState<boolean>("bot:showSettings", false);
 
   // multiple bots (each its own identical card)
-  const [bots, setBots] = usePersistedState<any[]>("bot:configs", []);
+  const [bots, setBots] = usePersistedState<BotCfg[]>("bot:configs", []);
   const [editingBotId, setEditingBotId] = reactUseState<string | null>(null);
 
   // Keep server awake while this page is open (poll /api/health every 4 minutes)
@@ -56,10 +69,40 @@ export default function BotCenter() {
   // default account
   useEffect(() => {
     if (!accountId && availableAccounts.length) setAccountId(availableAccounts[0].id);
-  }, [availableAccounts, accountId]);
+  }, [availableAccounts, accountId, setAccountId]);
+
+  // ✅ migrate stale persisted account ids (fixes "works in incognito but not normal tab")
+  useEffect(() => {
+    if (!availableAccounts.length) return;
+
+    const valid = new Set(availableAccounts.map((a: any) => String(a.id)));
+    const fallbackId = String(availableAccounts[0].id);
+
+    // Primary selected account
+    if (accountId && !valid.has(String(accountId))) {
+      setAccountId(fallbackId);
+    }
+
+    // Extra bot cards stored in localStorage
+    setBots((prev) => {
+      if (!Array.isArray(prev) || prev.length === 0) return prev;
+
+      let changed = false;
+      const next = prev.map((b: any) => {
+        const id = b?.account_id ? String(b.account_id) : "";
+        if (!id || !valid.has(id)) {
+          changed = true;
+          return { ...b, account_id: fallbackId };
+        }
+        return b;
+      });
+
+      return changed ? next : prev;
+    });
+  }, [availableAccounts, accountId, setAccountId, setBots]);
 
   // helper to compute execution unit from timeframe
-  const computeExecUnit = (tf: string): "t" | "m" | "h" | "d" => {
+  const computeExecUnit = (tf: string): DurationUnit => {
     if (tf === "1s") return "t";
     if (tf.endsWith("m")) return "m";
     if (tf.endsWith("h")) return "h";
@@ -70,7 +113,7 @@ export default function BotCenter() {
 
   // Add bot (no hard limit)
   const addBot = () => {
-    const b = {
+    const b: BotCfg & { id: string } = {
       id: makeId(),
       account_id: accountId || (availableAccounts[0]?.id ?? ""),
       symbol,
@@ -84,19 +127,26 @@ export default function BotCenter() {
     toast({ title: "Bot added", description: `${b.symbol} · ${b.strategy_id || "no-strategy"}` });
   };
 
-  const updateBot = (id: string, patch: Partial<any>) =>
+  const updateBot = (id: string, patch: Partial<BotCfg>) =>
     setBots((s) =>
-      s.map((b) => {
+      s.map((b: any) => {
         if (b.id !== id) return b;
+
         // keep execution unit aligned when timeframe changes
         if (patch.timeframe && patch.timeframe !== b.timeframe) {
           const du = computeExecUnit(patch.timeframe);
           return {
             ...b,
             ...patch,
-            params: { ...(b.params || {}), duration_unit: du, duration: Math.max(1, Number(b.params?.duration ?? 5)) },
+            params: {
+              ...(b.params || {}),
+              ...(patch.params || {}),
+              duration_unit: du,
+              duration: Math.max(1, Number(b.params?.duration ?? 5)),
+            },
           };
         }
+
         // merge defaults when strategy changes (preserve execution fields)
         if (patch.strategy_id && patch.strategy_id !== b.strategy_id) {
           const defaults = getStrategyDefaults(patch.strategy_id);
@@ -104,21 +154,24 @@ export default function BotCenter() {
           const exec = {
             stake: Number(b.params?.stake ?? 250),
             duration: Number(b.params?.duration ?? 5),
-            duration_unit: (b.params?.duration_unit as any) ?? computeExecUnit(b.timeframe),
+            duration_unit: (b.params?.duration_unit as DurationUnit) ?? computeExecUnit(b.timeframe),
             max_open_trades: Number(b.params?.max_open_trades ?? 5),
           };
-          const nextParams: Record<string, any> = {
+
+          const nextParams: StrategyParams = {
             ...defaults,
             ...Object.fromEntries(Object.entries(b.params || {}).filter(([k]) => execKeys.has(k))),
             ...exec,
           };
+
           return { ...b, ...patch, params: nextParams };
         }
+
         return { ...b, ...patch };
-      })
+      }),
     );
 
-  const removeBot = (id: string) => setBots((s) => s.filter((b) => b.id !== id));
+  const removeBot = (id: string) => setBots((s) => s.filter((b: any) => b.id !== id));
 
   const isPro = sub?.plan === "pro";
 
@@ -130,21 +183,27 @@ export default function BotCenter() {
 
   // derive per-run state from status.runs
   const runs = status?.runs ?? [];
-  const isRunRunning = (rid: string) => runs.some((r) => r.run_id === rid && r.state === "running");
+  const isRunRunning = (rid: string) => runs.some((r: any) => r.run_id === rid && r.state === "running");
 
   // Primary start: ONLY start the primary config with a unique run name
   const start = async () => {
     try {
       if (!isPro && (mode === "paper" || mode === "live")) {
-        toast({ title: "Upgrade required", description: "Paper/Live trading requires Pro plan.", variant: "destructive" });
+        toast({
+          title: "Upgrade required",
+          description: "Paper/Live trading requires Pro plan.",
+          variant: "destructive",
+        });
         return;
       }
       if (!accountId || !strategyId) {
         toast({ title: "Missing fields", description: "Select account and strategy.", variant: "destructive" });
         return;
       }
+
       // optional: persist current settings (do not enable)
       await persistSettings({ ...params }, false);
+
       await startBot.mutateAsync({
         run_id: runIdPrimary,
         name: runNamePrimary,
@@ -160,6 +219,7 @@ export default function BotCenter() {
           },
         ],
       });
+
       toast({ title: "Bot started", description: "Primary bot is running." });
     } catch (e: any) {
       toast({ title: "Start failed", description: String(e.message ?? e), variant: "destructive" });
@@ -179,13 +239,18 @@ export default function BotCenter() {
   const startSingle = async (b: any) => {
     try {
       if (!isPro && (b.mode === "paper" || b.mode === "live")) {
-        toast({ title: "Upgrade required", description: "Paper/Live trading requires Pro plan.", variant: "destructive" });
+        toast({
+          title: "Upgrade required",
+          description: "Paper/Live trading requires Pro plan.",
+          variant: "destructive",
+        });
         return;
       }
       if (!b.strategy_id || !b.account_id) {
         toast({ title: "Missing fields", description: "Select account and strategy.", variant: "destructive" });
         return;
       }
+
       // optional: persist settings (do not enable)
       await apiFetch(api.strategies.setSettings.path, {
         method: "POST",
@@ -214,6 +279,7 @@ export default function BotCenter() {
           },
         ],
       });
+
       toast({ title: "Bot started", description: `${b.symbol} · ${b.strategy_id}` });
     } catch (e: any) {
       toast({ title: "Start failed", description: String(e?.message ?? e), variant: "destructive" });
@@ -222,34 +288,39 @@ export default function BotCenter() {
 
   // set duration unit when timeframe changes (1s => ticks) for primary
   useEffect(() => {
-    setParams((p) => {
-      if (timeframe === "1s") return { ...p, duration_unit: "t" as const, duration: Math.max(1, p.duration || 5) };
-      if (timeframe.endsWith("m")) return { ...p, duration_unit: "m" as const };
-      if (timeframe.endsWith("h")) return { ...p, duration_unit: "h" as const };
-      if (timeframe.endsWith("d")) return { ...p, duration_unit: "d" as const };
+    setParams((p: StrategyParams) => {
+      if (timeframe === "1s") return { ...p, duration_unit: "t", duration: Math.max(1, p.duration || 5) };
+      if (timeframe.endsWith("m")) return { ...p, duration_unit: "m" };
+      if (timeframe.endsWith("h")) return { ...p, duration_unit: "h" };
+      if (timeframe.endsWith("d")) return { ...p, duration_unit: "d" };
       return p;
     });
-  }, [timeframe]);
+  }, [timeframe, setParams]);
 
   // merge defaults for selected strategy; clear fields from previous strategy (primary)
   useEffect(() => {
-    setParams((p) => {
-      const exec = {
+    setParams((p: StrategyParams) => {
+      const exec: StrategyParams = {
+        ...p,
         stake: p.stake ?? 250,
         duration: p.duration ?? 5,
         duration_unit: p.duration_unit ?? (timeframe === "1s" ? "t" : "m"),
         max_open_trades: p.max_open_trades ?? 5,
-      } as any;
+      };
+
       if (!strategyId) return exec;
+
       const defaults = getStrategyDefaults(strategyId);
       const allowedKeys = new Set(
-        Object.keys(defaults).concat(EXECUTION_FIELDS.map((f) => f.key)).concat(["max_open_trades"])
+        Object.keys(defaults).concat(EXECUTION_FIELDS.map((f) => f.key)).concat(["max_open_trades"]),
       );
+
       const next: Record<string, any> = {};
       for (const k of Object.keys(p)) if (allowedKeys.has(k)) next[k] = (p as any)[k];
-      return { ...defaults, ...exec, ...next };
+
+      return { ...defaults, ...exec, ...next } as StrategyParams;
     });
-  }, [strategyId, timeframe]);
+  }, [strategyId, timeframe, setParams]);
 
   // load saved settings for primary combo
   useEffect(() => {
@@ -260,12 +331,12 @@ export default function BotCenter() {
         const r = await apiFetch(path);
         const list = (await r.json()) as any[];
         const found = list.find((s) => s.symbol === symbol && s.timeframe === timeframe && s.strategy_id === strategyId);
-        if (found?.params) setParams((p) => ({ ...p, ...found.params }));
+        if (found?.params) setParams((p: StrategyParams) => ({ ...p, ...found.params }));
       } catch {
         /* ignore */
       }
     })();
-  }, [accountId, symbol, timeframe, strategyId]);
+  }, [accountId, symbol, timeframe, strategyId, setParams]);
 
   // Persist helper (do not enable globally)
   const persistSettings = async (next = params, enabled = false) => {
@@ -292,7 +363,11 @@ export default function BotCenter() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="text-2xl font-semibold">Control Panel</div>
-        <span className={`rounded-full px-3 py-1 text-xs font-semibold ${status?.state === "running" ? "bg-emerald-500/15 text-emerald-300" : "bg-zinc-600/20 text-zinc-300"}`}>
+        <span
+          className={`rounded-full px-3 py-1 text-xs font-semibold ${
+            status?.state === "running" ? "bg-emerald-500/15 text-emerald-300" : "bg-zinc-600/20 text-zinc-300"
+          }`}
+        >
           {status?.state === "running" ? "RUNNING" : "STOPPED"}
         </span>
       </div>
@@ -327,7 +402,9 @@ export default function BotCenter() {
                       {k}: <span className="text-foreground">{String(v)}</span>
                     </div>
                   ))}
-                <div>Expiry: <span className="text-foreground">{params.duration}{params.duration_unit}</span></div>
+                <div>
+                  Expiry: <span className="text-foreground">{params.duration}{params.duration_unit}</span>
+                </div>
               </div>
             )}
           </div>
@@ -335,30 +412,63 @@ export default function BotCenter() {
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
             <div>
               <label className="block text-sm">Account</label>
-              <select className="w-full rounded-lg border border-border bg-background px-3 py-2" value={accountId} onChange={(e) => setAccountId(e.target.value)}>
+              <select
+                className="w-full rounded-lg border border-border bg-background px-3 py-2"
+                value={accountId}
+                onChange={(e) => setAccountId(e.target.value)}
+              >
                 {availableAccounts.map((a: any) => (
-                  <option key={a.id} value={a.id}>{a.label} {a.type ? `(${a.type})` : ""}</option>
+                  <option key={a.id} value={a.id}>
+                    {a.label} {a.type ? `(${a.type})` : ""}
+                  </option>
                 ))}
               </select>
             </div>
             <div>
               <label className="block text-sm">Symbol</label>
-              <input className="w-full rounded-lg border border-border bg-background px-3 py-2" value={symbol} onChange={(e) => setSymbol(e.target.value)} />
+              <input
+                className="w-full rounded-lg border border-border bg-background px-3 py-2"
+                value={symbol}
+                onChange={(e) => setSymbol(e.target.value)}
+              />
             </div>
             <div>
               <label className="block text-sm">Timeframe</label>
-              <select className="w-full rounded-lg border border-border bg-background px-3 py-2" value={timeframe} onChange={(e) => setTimeframe(e.target.value)}>
-                {["1s", "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "1d"].map((t) => <option key={t} value={t}>{t}</option>)}
+              <select
+                className="w-full rounded-lg border border-border bg-background px-3 py-2"
+                value={timeframe}
+                onChange={(e) => setTimeframe(e.target.value)}
+              >
+                {["1s", "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "1d"].map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
               </select>
             </div>
           </div>
 
           <div>
             <label className="block text-sm">Strategy</label>
-            <select className="w-full rounded-lg border border-border bg-background px-3 py-2" value={strategyId} onChange={(e) => setStrategyId(e.target.value)}>
+            <select
+              className="w-full rounded-lg border border-border bg-background px-3 py-2"
+              value={strategyId}
+              onChange={(e) => setStrategyId(e.target.value)}
+            >
               <option value="">Select a strategy…</option>
-              {["candle_pattern", "one_hour_trend", "trend_confirmation", "scalping_hwr", "trend_pullback", "supply_demand_sweep", "fvg_retracement", "range_mean_reversion"].map((s) => (
-                <option key={s} value={s}>{s}</option>
+              {[
+                "candle_pattern",
+                "one_hour_trend",
+                "trend_confirmation",
+                "scalping_hwr",
+                "trend_pullback",
+                "supply_demand_sweep",
+                "fvg_retracement",
+                "range_mean_reversion",
+              ].map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
               ))}
             </select>
           </div>
@@ -367,18 +477,41 @@ export default function BotCenter() {
             <button
               onClick={start}
               disabled={!strategyId || (!isPro && (mode === "paper" || mode === "live"))}
-              className={`rounded-lg px-3 py-2 font-semibold ${(!strategyId || (!isPro && (mode === "paper" || mode === "live"))) ? "border border-border bg-muted text-muted-foreground cursor-not-allowed" : "bg-ysbPurple text-ysbYellow hover:opacity-90"}`}
+              className={`rounded-lg px-3 py-2 font-semibold ${
+                !strategyId || (!isPro && (mode === "paper" || mode === "live"))
+                  ? "border border-border bg-muted text-muted-foreground cursor-not-allowed"
+                  : "bg-ysbPurple text-ysbYellow hover:opacity-90"
+              }`}
             >
               {isRunRunning(runIdPrimary) ? "RESTART" : "START"}
             </button>
-            <button onClick={() => stopRun(runIdPrimary)} className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground">Stop</button>
+            <button
+              onClick={() => stopRun(runIdPrimary)}
+              className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground"
+            >
+              Stop
+            </button>
             <div className="ml-auto flex items-center gap-2">
-              <select className="rounded-lg border border-border bg-background px-3 py-2 text-sm" value={mode} onChange={(e) => setMode(e.target.value as any)}>
+              <select
+                className="rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                value={mode}
+                onChange={(e) => setMode(e.target.value as any)}
+              >
                 <option value="backtest">Backtest</option>
-                <option value="paper" disabled={!isPro}>Paper{!isPro ? " (Pro only)" : ""}</option>
-                <option value="live" disabled={!isPro}>Live{!isPro ? " (Pro only)" : ""}</option>
+                <option value="paper" disabled={!isPro}>
+                  Paper{!isPro ? " (Pro only)" : ""}
+                </option>
+                <option value="live" disabled={!isPro}>
+                  Live{!isPro ? " (Pro only)" : ""}
+                </option>
               </select>
-              <button type="button" onClick={() => strategyId && setShowSettings(true)} className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted" title="Strategy settings" disabled={!strategyId}>
+              <button
+                type="button"
+                onClick={() => strategyId && setShowSettings(true)}
+                className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted"
+                title="Strategy settings"
+                disabled={!strategyId}
+              >
                 ⚙️
               </button>
             </div>
@@ -386,7 +519,7 @@ export default function BotCenter() {
         </div>
 
         {/* Extra bot cards (identical layout) */}
-        {bots.map((b) => (
+        {bots.map((b: any) => (
           <div key={b.id} className="rounded-2xl border border-border bg-card p-4 space-y-4">
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="rounded-xl border border-border bg-background p-3">
@@ -413,7 +546,9 @@ export default function BotCenter() {
                         {k}: <span className="text-foreground">{String(v)}</span>
                       </div>
                     ))}
-                  <div>Expiry: <span className="text-foreground">{b.params?.duration}{b.params?.duration_unit}</span></div>
+                  <div>
+                    Expiry: <span className="text-foreground">{b.params?.duration}{b.params?.duration_unit}</span>
+                  </div>
                 </div>
               )}
             </div>
@@ -421,30 +556,63 @@ export default function BotCenter() {
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
               <div>
                 <label className="block text-sm">Account</label>
-                <select className="w-full rounded-lg border border-border bg-background px-3 py-2" value={b.account_id} onChange={(e) => updateBot(b.id, { account_id: e.target.value })}>
+                <select
+                  className="w-full rounded-lg border border-border bg-background px-3 py-2"
+                  value={b.account_id}
+                  onChange={(e) => updateBot(b.id, { account_id: e.target.value })}
+                >
                   {availableAccounts.map((a: any) => (
-                    <option key={a.id} value={a.id}>{a.label} {a.type ? `(${a.type})` : ""}</option>
+                    <option key={a.id} value={a.id}>
+                      {a.label} {a.type ? `(${a.type})` : ""}
+                    </option>
                   ))}
                 </select>
               </div>
               <div>
                 <label className="block text-sm">Symbol</label>
-                <input className="w-full rounded-lg border border-border bg-background px-3 py-2" value={b.symbol} onChange={(e) => updateBot(b.id, { symbol: e.target.value })} />
+                <input
+                  className="w-full rounded-lg border border-border bg-background px-3 py-2"
+                  value={b.symbol}
+                  onChange={(e) => updateBot(b.id, { symbol: e.target.value })}
+                />
               </div>
               <div>
                 <label className="block text-sm">Timeframe</label>
-                <select className="w-full rounded-lg border border-border bg-background px-3 py-2" value={b.timeframe} onChange={(e) => updateBot(b.id, { timeframe: e.target.value })}>
-                  {["1s", "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "1d"].map((t) => <option key={t} value={t}>{t}</option>)}
+                <select
+                  className="w-full rounded-lg border border-border bg-background px-3 py-2"
+                  value={b.timeframe}
+                  onChange={(e) => updateBot(b.id, { timeframe: e.target.value })}
+                >
+                  {["1s", "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "1d"].map((t) => (
+                    <option key={t} value={t}>
+                      {t}
+                    </option>
+                  ))}
                 </select>
               </div>
             </div>
 
             <div>
               <label className="block text-sm">Strategy</label>
-              <select className="w-full rounded-lg border border-border bg-background px-3 py-2" value={b.strategy_id} onChange={(e) => updateBot(b.id, { strategy_id: e.target.value })}>
+              <select
+                className="w-full rounded-lg border border-border bg-background px-3 py-2"
+                value={b.strategy_id}
+                onChange={(e) => updateBot(b.id, { strategy_id: e.target.value })}
+              >
                 <option value="">Select a strategy…</option>
-                {["candle_pattern", "one_hour_trend", "trend_confirmation", "scalping_hwr", "trend_pullback", "supply_demand_sweep", "fvg_retracement", "range_mean_reversion"].map((s) => (
-                  <option key={s} value={s}>{s}</option>
+                {[
+                  "candle_pattern",
+                  "one_hour_trend",
+                  "trend_confirmation",
+                  "scalping_hwr",
+                  "trend_pullback",
+                  "supply_demand_sweep",
+                  "fvg_retracement",
+                  "range_mean_reversion",
+                ].map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
                 ))}
               </select>
             </div>
@@ -453,11 +621,20 @@ export default function BotCenter() {
               <button
                 onClick={() => startSingle(b)}
                 disabled={!b.strategy_id || !b.account_id || (!isPro && (b.mode === "paper" || b.mode === "live"))}
-                className={`rounded-lg px-3 py-2 font-semibold ${(!b.strategy_id || !b.account_id || (!isPro && (b.mode === "paper" || b.mode === "live"))) ? "border border-border bg-muted text-muted-foreground cursor-not-allowed" : "bg-ysbPurple text-ysbYellow hover:opacity-90"}`}
+                className={`rounded-lg px-3 py-2 font-semibold ${
+                  !b.strategy_id || !b.account_id || (!isPro && (b.mode === "paper" || b.mode === "live"))
+                    ? "border border-border bg-muted text-muted-foreground cursor-not-allowed"
+                    : "bg-ysbPurple text-ysbYellow hover:opacity-90"
+                }`}
               >
                 {isRunRunning(runIdOf(b)) ? "RESTART" : "START"}
               </button>
-              <button onClick={() => stopRun(runIdOf(b))} className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground">Stop</button>
+              <button
+                onClick={() => stopRun(runIdOf(b))}
+                className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground"
+              >
+                Stop
+              </button>
               <div className="ml-auto flex items-center gap-2">
                 <select
                   className="rounded-lg border border-border bg-background px-3 py-2 text-sm"
@@ -465,8 +642,12 @@ export default function BotCenter() {
                   onChange={(e) => updateBot(b.id, { mode: e.target.value as any })}
                 >
                   <option value="backtest">Backtest</option>
-                  <option value="paper" disabled={!isPro}>Paper{!isPro ? " (Pro only)" : ""}</option>
-                  <option value="live" disabled={!isPro}>Live{!isPro ? " (Pro only)" : ""}</option>
+                  <option value="paper" disabled={!isPro}>
+                    Paper{!isPro ? " (Pro only)" : ""}
+                  </option>
+                  <option value="live" disabled={!isPro}>
+                    Live{!isPro ? " (Pro only)" : ""}
+                  </option>
                 </select>
                 <button
                   type="button"
@@ -498,7 +679,9 @@ export default function BotCenter() {
           title="Add bot"
         >
           <div className="flex flex-col items-center gap-2">
-            <div className="flex h-14 w-14 items-center justify-center rounded-full bg-ysbPurple text-ysbYellow text-3xl shadow-xl">+</div>
+            <div className="flex h-14 w-14 items-center justify-center rounded-full bg-ysbPurple text-ysbYellow text-3xl shadow-xl">
+              +
+            </div>
             <div className="text-sm text-muted-foreground">Add bot</div>
           </div>
         </button>
@@ -517,7 +700,7 @@ export default function BotCenter() {
           </button>
         </div>
         <div className="max-h-[28rem] overflow-auto rounded-lg border border-border bg-background p-2 font-mono text-xs text-muted-foreground">
-          {logs.slice(0, 400).map((l, i) => (
+          {logs.slice(0, 400).map((l: any, i: number) => (
             <div key={i} className="whitespace-pre-wrap">
               <span className="text-muted-foreground">{new Date(l.ts).toLocaleTimeString()} </span>
               {l.message}
@@ -539,14 +722,22 @@ export default function BotCenter() {
 
       {showSettings && (
         <StrategySettingsModal
-          params={editingBotId ? (bots.find(b=>b.id===editingBotId)?.params ?? params) : params}
-          fields={(STRATEGY_SETTINGS[(editingBotId ? (bots.find(b=>b.id===editingBotId)?.strategy_id) : strategyId) ?? ""] ?? []).filter(f => f.category !== "execution")}
-          onClose={() => { setShowSettings(false); setEditingBotId(null); }}
+          params={editingBotId ? (bots.find((b: any) => b.id === editingBotId)?.params ?? params) : params}
+          fields={(
+            STRATEGY_SETTINGS[
+              ((editingBotId ? bots.find((b: any) => b.id === editingBotId)?.strategy_id : strategyId) ?? "") as any
+            ] ?? []
+          ).filter((f: any) => f.category !== "execution")}
+          onClose={() => {
+            setShowSettings(false);
+            setEditingBotId(null);
+          }}
           onSave={async (next) => {
             if (editingBotId) {
-              const b = bots.find(x=>x.id===editingBotId);
+              const b = bots.find((x: any) => x.id === editingBotId);
               if (b) {
                 updateBot(editingBotId, { params: next });
+
                 // Persist without enabling globally
                 await apiFetch(api.strategies.setSettings.path, {
                   method: "POST",
@@ -573,102 +764,156 @@ export default function BotCenter() {
   );
 }
 
-function StrategySettingsModal({ params, onSave, onClose, fields }: {
-  params: { stake: number; duration: number; duration_unit: "m"|"h"|"d"|"t"; max_open_trades?: number; [k: string]: any };
-  fields: { key: string; label: string; type: "number"|"select"|"boolean"|"text"; min?: number; max?: number; step?: number; options?: string[]; default?: string | number | boolean }[];
-   onSave: (p: any) => void;
-   onClose: () => void;
- }) {
-   const [form, setForm] = useState(params);
-   return (
-     <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4">
-       <div className="w-full max-w-lg rounded-2xl border border-border bg-card p-5">
-         <div className="text-xl font-semibold mb-1">Strategy Configuration</div>
-         <div className="text-sm text-muted-foreground mb-4">Adjust the parameters.</div>
+function StrategySettingsModal({
+  params,
+  onSave,
+  onClose,
+  fields,
+}: {
+  params: StrategyParams;
+  fields: {
+    key: string;
+    label: string;
+    type: "number" | "select" | "boolean" | "text";
+    min?: number;
+    max?: number;
+    step?: number;
+    options?: string[];
+    default?: string | number | boolean;
+  }[];
+  onSave: (p: StrategyParams) => void;
+  onClose: () => void;
+}) {
+  const [form, setForm] = reactUseState<StrategyParams>(params);
 
-         <div className="space-y-3">
-           <div>
-             <label className="block text-sm mb-1">Stake ($)</label>
-             <input type="number" className="w-full rounded-lg border border-border bg-background px-3 py-2"
-               value={form.stake} onChange={(e) => setForm({ ...form, stake: Number(e.target.value) })}/>
-           </div>
+  // keep modal in sync when opening for a different bot
+  useEffect(() => {
+    setForm(params);
+  }, [params]);
 
-           {!!fields.length && (
-             <div className="grid gap-3 md:grid-cols-2">
-               {fields.map((f) => (
-                 <div key={f.key}>
-                   <label className="block text-sm mb-1">{f.label}</label>
-                   {f.type === "number" && (
-                     <input type="number" className="w-full rounded-lg border border-border bg-background px-3 py-2"
-                       min={f.min} max={f.max} step={f.step}
-                       value={Number(form[f.key] ?? f.default ?? 0)}
-                       onChange={(e) => setForm({ ...form, [f.key]: Number(e.target.value) })}/>
-                   )}
-                   {f.type === "select" && (
-                     <select className="w-full rounded-lg border border-border bg-background px-3 py-2"
-                       value={String(form[f.key] ?? f.default ?? "")}
-                       onChange={(e) => setForm({ ...form, [f.key]: e.target.value })}>
-                       {(f.options ?? []).map((o) => <option key={o} value={o}>{o}</option>)}
-                     </select>
-                   )}
-                   {f.type === "boolean" && (
-                     <input type="checkbox"
-                       checked={Boolean(form[f.key] ?? f.default ?? false)}
-                       onChange={(e) => setForm({ ...form, [f.key]: e.target.checked })}/>
-                   )}
-                   {f.type === "text" && (
-                     <input type="text" className="w-full rounded-lg border border-border bg-background px-3 py-2"
-                       value={String(form[f.key] ?? f.default ?? "")}
-                       onChange={(e) => setForm({ ...form, [f.key]: e.target.value })}/>
-                   )}
-                 </div>
-               ))}
-             </div>
-           )}
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4">
+      <div className="w-full max-w-lg rounded-2xl border border-border bg-card p-5">
+        <div className="text-xl font-semibold mb-1">Strategy Configuration</div>
+        <div className="text-sm text-muted-foreground mb-4">Adjust the parameters.</div>
 
-           <div className="grid gap-3 md:grid-cols-2">
-             <div>
-               <label className="block text-sm mb-1">{form.duration_unit === "t" ? "Tick Count" : "Expiry Duration"}</label>
-               <input type="number" min={1} className="w-full rounded-lg border border-border bg-background px-3 py-2"
-                 value={form.duration} onChange={(e) => setForm({ ...form, duration: Number(e.target.value) })}/>
-             </div>
-             <div>
-               <label className="block text-sm mb-1">Unit</label>
-               <select className="w-full rounded-lg border border-border bg-background px-3 py-2"
-                 value={form.duration_unit} onChange={(e) => setForm({ ...form, duration_unit: e.target.value as any })}>
-                 <option value="t">Ticks</option>
-                 <option value="m">Minutes</option>
-                 <option value="h">Hours</option>
-                 <option value="d">Days</option>
-               </select>
-             </div>
-           </div>
+        <div className="space-y-3">
+          <div>
+            <label className="block text-sm mb-1">Stake ($)</label>
+            <input
+              type="number"
+              className="w-full rounded-lg border border-border bg-background px-3 py-2"
+              value={form.stake}
+              onChange={(e) => setForm({ ...form, stake: Number(e.target.value) })}
+            />
+          </div>
 
-           <div>
-             <label className="block text-sm mb-1">Max open trades</label>
-             <input
-               type="number"
-               min={1}
-               className="w-full rounded-lg border border-border bg-background px-3 py-2"
-               value={Number(form.max_open_trades ?? 5)}
-               onChange={(e) => setForm({ ...form, max_open_trades: Math.max(1, Number(e.target.value)) })}
-             />
-           </div>
-         </div>
+          {!!fields.length && (
+            <div className="grid gap-3 md:grid-cols-2">
+              {fields.map((f) => (
+                <div key={f.key}>
+                  <label className="block text-sm mb-1">{f.label}</label>
 
-         <div className="mt-5 flex items-center justify-end gap-2">
-           <button className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground" onClick={onClose}>
-             Cancel
-           </button>
-           <button className="rounded-lg bg-ysbPurple px-3 py-2 font-semibold text-ysbYellow hover:opacity-90" onClick={() => onSave(form)}>
-             Save Changes
-           </button>
-         </div>
-       </div>
-     </div>
-   );
- }
+                  {f.type === "number" && (
+                    <input
+                      type="number"
+                      className="w-full rounded-lg border border-border bg-background px-3 py-2"
+                      min={f.min}
+                      max={f.max}
+                      step={f.step}
+                      value={Number(form[f.key] ?? f.default ?? 0)}
+                      onChange={(e) => setForm({ ...form, [f.key]: Number(e.target.value) })}
+                    />
+                  )}
 
- function useState(params: { [k: string]: any; stake: number; duration: number; duration_unit: "m" | "h" | "d" | "t"; }): [any, any] {
-  return reactUseState(params);
+                  {f.type === "select" && (
+                    <select
+                      className="w-full rounded-lg border border-border bg-background px-3 py-2"
+                      value={String(form[f.key] ?? f.default ?? "")}
+                      onChange={(e) => setForm({ ...form, [f.key]: e.target.value })}
+                    >
+                      {(f.options ?? []).map((o) => (
+                        <option key={o} value={o}>
+                          {o}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+
+                  {f.type === "boolean" && (
+                    <input
+                      type="checkbox"
+                      checked={Boolean(form[f.key] ?? f.default ?? false)}
+                      onChange={(e) => setForm({ ...form, [f.key]: e.target.checked })}
+                    />
+                  )}
+
+                  {f.type === "text" && (
+                    <input
+                      type="text"
+                      className="w-full rounded-lg border border-border bg-background px-3 py-2"
+                      value={String(form[f.key] ?? f.default ?? "")}
+                      onChange={(e) => setForm({ ...form, [f.key]: e.target.value })}
+                    />
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="grid gap-3 md:grid-cols-2">
+            <div>
+              <label className="block text-sm mb-1">{form.duration_unit === "t" ? "Tick Count" : "Expiry Duration"}</label>
+              <input
+                type="number"
+                min={1}
+                className="w-full rounded-lg border border-border bg-background px-3 py-2"
+                value={form.duration}
+                onChange={(e) => setForm({ ...form, duration: Number(e.target.value) })}
+              />
+            </div>
+            <div>
+              <label className="block text-sm mb-1">Unit</label>
+              <select
+                className="w-full rounded-lg border border-border bg-background px-3 py-2"
+                value={form.duration_unit}
+                onChange={(e) => setForm({ ...form, duration_unit: e.target.value as DurationUnit })}
+              >
+                <option value="t">Ticks</option>
+                <option value="m">Minutes</option>
+                <option value="h">Hours</option>
+                <option value="d">Days</option>
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-sm mb-1">Max open trades</label>
+            <input
+              type="number"
+              min={1}
+              className="w-full rounded-lg border border-border bg-background px-3 py-2"
+              value={Number(form.max_open_trades ?? 5)}
+              onChange={(e) => setForm({ ...form, max_open_trades: Math.max(1, Number(e.target.value)) })}
+            />
+          </div>
+        </div>
+
+        <div className="mt-5 flex items-center justify-end gap-2">
+          <button
+            className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground"
+            onClick={onClose}
+          >
+            Cancel
+          </button>
+          <button
+            className="rounded-lg bg-ysbPurple px-3 py-2 font-semibold text-ysbYellow hover:opacity-90"
+            onClick={() => onSave(form)}
+          >
+            Save Changes
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
