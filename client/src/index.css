@@ -129,6 +129,8 @@ body.drawer-open { overflow: hidden; }
   height: calc(100vh - 70px);
   overflow: auto;
   -webkit-overflow-scrolling: touch;
+  display: flex;
+  flex-direction: column;
 }
 
 /* Nav/actions shared */
@@ -143,6 +145,32 @@ body.drawer-open { overflow: hidden; }
 }
 
 .app-shell__main { padding: 16px; }
+
+/* ===== AppShell layout fixes (nav spacing under logo/header) ===== */
+.app-shell__aside,
+.app-shell__drawerBody {
+  display: flex;
+  flex-direction: column;
+}
+
+.app-shell__header {
+  padding-bottom: 12px; /* ✅ space under logo/title */
+  margin-bottom: 8px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+
+.app-shell__nav {
+  margin-top: 8px; /* ✅ prevents first item touching header */
+}
+
+.app-shell__navItem {
+  margin-top: 2px;
+}
+
+/* Drawer header already has border; keep body spaced from it */
+.app-shell__drawerBody {
+  padding-top: 10px;
+}
 
 /* ---------------- Breakpoints (requested) ---------------- */
 /* 576px: Small devices (landscape phones) */
