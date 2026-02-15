@@ -31,10 +31,11 @@ type Running = {
 
 export class BotManager {
   private runs = new Map<string, Running>(); // key = `${userId}::${runId}`
-  // Removed global DerivClient; use per-account clients only.
   private derivClients = new Map<string, DerivClient>();
-  // Track open trades per run/config
   private openCounts = new Map<string, number>();
+
+  // ✅ throttle reconciliation per account
+  private lastReconcileAt = new Map<string, number>();
 
   private runKey(userId: string, runId: string) {
     return `${userId}::${runId}`;
@@ -145,11 +146,88 @@ export class BotManager {
   async stopById(userId: string, runId: string) {
     const key = this.runKey(userId, runId);
     const bot = this.runs.get(key);
+
+    // ✅ best-effort reconciliation before stopping (prevents stuck open trades)
+    if (bot) {
+      const liveAccountIds = Array.from(new Set(bot.configs.filter((c) => c.mode === "live").map((c) => c.account_id)));
+      for (const accountId of liveAccountIds) {
+        try {
+          await this.reconcileAccountLiveTrades(userId, accountId);
+        } catch (e) {
+          this.hub.log("reconcile on stop failed", { accountId, error: String(e) });
+        }
+      }
+    }
+
     if (bot?.timer) clearInterval(bot.timer);
     this.runs.delete(key);
     this.clearRunOpenCounts(userId, runId);
     this.hub.log("bot stopped", { userId, runId });
     this.hub.status(this.getStatus(userId));
+  }
+
+  private async reconcileAccountLiveTrades(userId: string, accountId: string) {
+    // throttle: once every 15s per account
+    const now = Date.now();
+    const last = this.lastReconcileAt.get(accountId) ?? 0;
+    if (now - last < 15_000) return;
+    this.lastReconcileAt.set(accountId, now);
+
+    let token = "";
+    try {
+      token = await this.accountToken(accountId);
+    } catch (e) {
+      this.hub.log("reconcile: token decrypt failed", { accountId, error: String(e) });
+      return;
+    }
+    if (!token) return;
+
+    const deriv = await this.getDerivClient(accountId, token);
+
+    const { data: openTrades, error } = await supabaseAdmin
+      .from("trades")
+      .select("id, entry, opened_at, meta")
+      .eq("user_id", userId)
+      .eq("account_id", accountId)
+      .eq("mode", "live")
+      .is("closed_at", null)
+      .order("opened_at", { ascending: false })
+      .limit(50);
+
+    if (error) throw error;
+    if (!openTrades?.length) return;
+
+    for (const tr of openTrades as any[]) {
+      const contractId = Number(tr?.meta?.contract_id ?? 0);
+      if (!contractId) continue;
+
+      let snap: any = null;
+      try {
+        snap = await deriv.openContract(contractId);
+      } catch {
+        continue; // transient; leave open
+      }
+
+      // Deriv: close only when sold/settled
+      if (!snap?.is_sold) continue;
+
+      const buyPrice = Number(tr?.entry ?? 0);
+      const sellPrice = Number(snap?.sell_price ?? snap?.bid_price ?? 0);
+      const profit = Number.isFinite(sellPrice) && Number.isFinite(buyPrice) ? sellPrice - buyPrice : 0;
+
+      const closedAt =
+        snap?.sell_time ? new Date(Number(snap.sell_time) * 1000).toISOString() : new Date().toISOString();
+
+      try {
+        await supabaseAdmin
+          .from("trades")
+          .update({ exit: sellPrice, profit, closed_at: closedAt })
+          .eq("id", tr.id);
+        this.hub.log("reconciled live trade closed", { tradeId: tr.id, contractId, sellPrice, profit });
+      } catch (e) {
+        this.hub.log("reconcile: db update failed", { tradeId: tr.id, error: String(e) });
+      }
+    }
   }
 
   private async getDerivClient(accountId: string, token: string) {
@@ -236,6 +314,14 @@ export class BotManager {
     }
 
     const deriv = await this.getDerivClient(cfg.account_id, token);
+
+    // ✅ reconcile stuck open DB trades (especially after stop/restart)
+    if (cfg.mode === "live") {
+      await this.reconcileAccountLiveTrades(bot.userId, cfg.account_id).catch((e) =>
+        this.hub.log("reconcile failed", { accountId: cfg.account_id, error: String(e) }),
+      );
+    }
+
     const granSec = timeframeToSec(cfg.timeframe);
     const raw = await deriv.candles(cfg.symbol, granSec, 120);
     const candles = raw.map((c: any) => ({
