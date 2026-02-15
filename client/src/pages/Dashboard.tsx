@@ -1,3 +1,4 @@
+import "@/styles/dashboard.css";
 import { motion } from "framer-motion";
 import { Activity, DollarSign, Target, TrendingUp, Wallet, RefreshCw } from "lucide-react";
 import { StatCard } from "@/components/StatCard";

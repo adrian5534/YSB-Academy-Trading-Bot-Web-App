@@ -90,10 +90,11 @@ export function LiveChart({
   const data = useMemo(() => buildEquityCurve(trades, startEquity), [trades, startEquity]);
 
   return (
-    <div className="rounded-2xl border border-border bg-card p-4">
-      <div className="font-semibold mb-2">{title}</div>
+    <div className="live-chart rounded-2xl border border-border bg-card p-4">
+      <div className="live-chart__title font-semibold mb-2">{title}</div>
 
-      <div className="h-64">
+      {/* was: className="h-64" */}
+      <div className="live-chart__plot">
         {data.length === 0 ? (
           <div className="h-full grid place-items-center text-sm text-muted-foreground">No closed trades yet</div>
         ) : (
@@ -116,7 +117,9 @@ export function LiveChart({
         )}
       </div>
 
-      <div className="text-xs text-muted-foreground mt-2">Built from closed trades; aligns to current balance if provided.</div>
+      <div className="live-chart__footer text-xs text-muted-foreground mt-2">
+        Built from closed trades; aligns to current balance if provided.
+      </div>
     </div>
   );
 }

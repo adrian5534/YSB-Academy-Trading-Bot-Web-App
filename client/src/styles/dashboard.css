@@ -1,0 +1,32 @@
+/* LiveChart responsive height (mobile-first) */
+.live-chart__plot {
+  height: 220px; /* phones */
+}
+
+/* 576px */
+@media (min-width: 576px) {
+  .live-chart__plot {
+    height: 260px;
+  }
+}
+
+/* 768px */
+@media (min-width: 768px) {
+  .live-chart__plot {
+    height: 300px;
+  }
+}
+
+/* 992px */
+@media (min-width: 992px) {
+  .live-chart__plot {
+    height: 340px;
+  }
+}
+
+/* 1200px */
+@media (min-width: 1200px) {
+  .live-chart__plot {
+    height: 380px;
+  }
+}
