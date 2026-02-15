@@ -10,8 +10,24 @@ import { apiFetch } from "@/lib/api";
 import { useKeepAlive } from "@/hooks/use-keep-alive";
 import { usePersistedState } from "@/hooks/use-persisted-state";
 import { useState as reactUseState } from "react";
+import { useInstruments } from "@/hooks/use-instruments";
 
 type DurationUnit = "m" | "h" | "d" | "t";
+
+type Instrument = {
+  symbol?: string;
+  display_name?: string;
+  market_display_name?: string;
+  market?: string;
+  submarket_display_name?: string;
+  subgroup_display_name?: string;
+};
+
+type InstrumentFilters = {
+  market: string; // market_display_name
+  submarket: string; // subgroup_display_name or submarket_display_name
+  q: string; // search query
+};
 
 // execution fields are required, strategy fields are free-form
 type StrategyParams = {
@@ -55,6 +71,18 @@ type RiskRules = {
   adaptive_lookback?: number;
 };
 
+function instrumentMarket(i: any): string {
+  return String(i?.market_display_name ?? i?.market ?? "Other");
+}
+function instrumentSubmarket(i: any): string {
+  return String(i?.subgroup_display_name ?? i?.submarket_display_name ?? "Other");
+}
+function instrumentLabel(i: any): string {
+  const name = String(i?.display_name ?? "").trim();
+  const sym = String(i?.symbol ?? "").trim();
+  return name ? `${name} (${sym})` : sym;
+}
+
 export default function BotCenter() {
   const { toast } = useToast();
   const { data: accounts } = useAccounts();
@@ -62,6 +90,8 @@ export default function BotCenter() {
   const { data: status } = useBotStatus();
   const startBot = useStartBot();
   const stopBot = useStopBot();
+
+  const { data: instruments, isLoading: instrumentsLoading, error: instrumentsError } = useInstruments();
 
   const { logs, clearLogs } = useRuntimeEvents();
 
@@ -86,6 +116,40 @@ export default function BotCenter() {
   // multiple bots (each its own identical card)
   const [bots, setBots] = usePersistedState<BotCfg[]>("bot:configs", []);
   const [editingBotId, setEditingBotId] = reactUseState<string | null>(null);
+
+  // ✅ Instrument picker filter state (persisted)
+  const [primaryInstrFilters, setPrimaryInstrFilters] = usePersistedState<InstrumentFilters>(
+    "bot:instrumentFilters:primary",
+    { market: "", submarket: "", q: "" },
+  );
+
+  const [cardInstrFilters, setCardInstrFilters] = usePersistedState<Record<string, InstrumentFilters>>(
+    "bot:instrumentFilters:cards",
+    {},
+  );
+
+  const getCardFilters = (id: string): InstrumentFilters => cardInstrFilters[id] ?? { market: "", submarket: "", q: "" };
+  const patchCardFilters = (id: string, patch: Partial<InstrumentFilters>) => {
+    setCardInstrFilters((prev: any) => ({
+      ...(prev ?? {}),
+      [id]: { ...(prev?.[id] ?? { market: "", submarket: "", q: "" }), ...(patch ?? {}) },
+    }));
+  };
+
+  // cleanup filter entries for removed cards
+  useEffect(() => {
+    const aliveIds = new Set((bots ?? []).map((b: any) => String(b?.id ?? "")));
+    setCardInstrFilters((prev: any) => {
+      const p = prev ?? {};
+      let changed = false;
+      const next: Record<string, InstrumentFilters> = {};
+      for (const [k, v] of Object.entries(p)) {
+        if (aliveIds.has(k)) next[k] = v as any;
+        else changed = true;
+      }
+      return changed ? next : p;
+    });
+  }, [bots, setCardInstrFilters]);
 
   // ✅ Risk settings state (global, but edited from the bot settings modal)
   const [risk, setRisk] = reactUseState<RiskRules | null>(null);
@@ -255,7 +319,15 @@ export default function BotCenter() {
       }),
     );
 
-  const removeBot = (id: string) => setBots((s) => s.filter((b: any) => b.id !== id));
+  const removeBot = (id: string) => {
+    setBots((s) => s.filter((b: any) => b.id !== id));
+    setCardInstrFilters((prev: any) => {
+      const p = prev ?? {};
+      if (!p[id]) return p;
+      const { [id]: _removed, ...rest } = p;
+      return rest;
+    });
+  };
 
   const isPro = sub?.plan === "pro";
 
@@ -497,7 +569,7 @@ export default function BotCenter() {
             )}
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             <div>
               <label className="block text-sm">Account</label>
               <select
@@ -512,14 +584,7 @@ export default function BotCenter() {
                 ))}
               </select>
             </div>
-            <div>
-              <label className="block text-sm">Symbol</label>
-              <input
-                className="w-full rounded-lg border border-border bg-background px-3 py-2"
-                value={symbol}
-                onChange={(e) => setSymbol(e.target.value)}
-              />
-            </div>
+
             <div>
               <label className="block text-sm">Timeframe</label>
               <select
@@ -535,6 +600,18 @@ export default function BotCenter() {
               </select>
             </div>
           </div>
+
+          {/* ✅ Instrument picker (markets + submarkets/categories + search) */}
+          <InstrumentPicker
+            title="Instrument"
+            instruments={instruments as any[]}
+            isLoading={instrumentsLoading}
+            error={instrumentsError}
+            symbol={symbol}
+            onSymbolChange={setSymbol}
+            filters={primaryInstrFilters}
+            onFiltersChange={setPrimaryInstrFilters}
+          />
 
           <div>
             <label className="block text-sm">Strategy</label>
@@ -641,7 +718,7 @@ export default function BotCenter() {
               )}
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               <div>
                 <label className="block text-sm">Account</label>
                 <select
@@ -656,14 +733,7 @@ export default function BotCenter() {
                   ))}
                 </select>
               </div>
-              <div>
-                <label className="block text-sm">Symbol</label>
-                <input
-                  className="w-full rounded-lg border border-border bg-background px-3 py-2"
-                  value={b.symbol}
-                  onChange={(e) => updateBot(b.id, { symbol: e.target.value })}
-                />
-              </div>
+
               <div>
                 <label className="block text-sm">Timeframe</label>
                 <select
@@ -679,6 +749,18 @@ export default function BotCenter() {
                 </select>
               </div>
             </div>
+
+            {/* ✅ Instrument picker for the card */}
+            <InstrumentPicker
+              title="Instrument"
+              instruments={instruments as any[]}
+              isLoading={instrumentsLoading}
+              error={instrumentsError}
+              symbol={String(b.symbol ?? "")}
+              onSymbolChange={(sym) => updateBot(b.id, { symbol: sym })}
+              filters={getCardFilters(String(b.id))}
+              onFiltersChange={(next) => patchCardFilters(String(b.id), next)}
+            />
 
             <div>
               <label className="block text-sm">Strategy</label>
@@ -859,6 +941,178 @@ export default function BotCenter() {
           }}
         />
       )}
+    </div>
+  );
+}
+
+function InstrumentPicker({
+  title,
+  instruments,
+  isLoading,
+  error,
+  symbol,
+  onSymbolChange,
+  filters,
+  onFiltersChange,
+}: {
+  title: string;
+  instruments: any[];
+  isLoading: boolean;
+  error: string | null;
+  symbol: string;
+  onSymbolChange: (s: string) => void;
+  filters: InstrumentFilters;
+  onFiltersChange: (next: InstrumentFilters) => void;
+}) {
+  const markets = useMemo(() => {
+    const m = new Map<string, number>();
+    (instruments ?? []).forEach((i: any) => {
+      const k = instrumentMarket(i);
+      m.set(k, (m.get(k) ?? 0) + 1);
+    });
+    return Array.from(m.entries())
+      .sort((a, b) => b[1] - a[1])
+      .map(([k]) => k);
+  }, [instruments]);
+
+  const submarkets = useMemo(() => {
+    const mm = filters.market;
+    const set = new Map<string, number>();
+    (instruments ?? []).forEach((i: any) => {
+      if (mm && instrumentMarket(i) !== mm) return;
+      const k = instrumentSubmarket(i);
+      set.set(k, (set.get(k) ?? 0) + 1);
+    });
+    return Array.from(set.entries())
+      .sort((a, b) => b[1] - a[1])
+      .map(([k]) => k);
+  }, [instruments, filters.market]);
+
+  const filtered = useMemo(() => {
+    const q = String(filters.q ?? "").trim().toLowerCase();
+    const mm = String(filters.market ?? "");
+    const sm = String(filters.submarket ?? "");
+
+    return (instruments ?? [])
+      .filter((i: any) => {
+        const sym = String(i?.symbol ?? "");
+        if (!sym) return false;
+
+        if (mm && instrumentMarket(i) !== mm) return false;
+        if (sm && instrumentSubmarket(i) !== sm) return false;
+
+        if (!q) return true;
+
+        const name = String(i?.display_name ?? "");
+        const group = instrumentSubmarket(i);
+        return (
+          sym.toLowerCase().includes(q) ||
+          name.toLowerCase().includes(q) ||
+          group.toLowerCase().includes(q) ||
+          instrumentMarket(i).toLowerCase().includes(q)
+        );
+      })
+      .sort((a: any, b: any) => {
+        const am = instrumentMarket(a);
+        const bm = instrumentMarket(b);
+        if (am !== bm) return am.localeCompare(bm);
+        return String(a?.display_name ?? a?.symbol ?? "").localeCompare(String(b?.display_name ?? b?.symbol ?? ""));
+      });
+  }, [instruments, filters.market, filters.submarket, filters.q]);
+
+  const currentInList = useMemo(() => {
+    const s = String(symbol ?? "").trim();
+    if (!s) return true;
+    return (instruments ?? []).some((i: any) => String(i?.symbol ?? "") === s);
+  }, [instruments, symbol]);
+
+  return (
+    <div className="rounded-xl border border-border bg-background p-3 space-y-2">
+      <div className="flex items-center justify-between">
+        <div className="text-sm text-muted-foreground">{title}</div>
+        {isLoading ? <div className="text-xs text-muted-foreground">Loading…</div> : null}
+      </div>
+
+      {error ? <div className="text-xs text-rose-400">Failed to load instruments: {error}</div> : null}
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+        <div>
+          <label className="block text-xs text-muted-foreground mb-1">Market</label>
+          <select
+            className="w-full rounded-lg border border-border bg-background px-3 py-2"
+            value={filters.market}
+            disabled={isLoading}
+            onChange={(e) => {
+              const nextMarket = e.target.value;
+              // reset submarket when market changes
+              onFiltersChange({ ...filters, market: nextMarket, submarket: "" });
+            }}
+          >
+            <option value="">All markets</option>
+            {markets.map((m) => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div>
+          <label className="block text-xs text-muted-foreground mb-1">Category</label>
+          <select
+            className="w-full rounded-lg border border-border bg-background px-3 py-2"
+            value={filters.submarket}
+            disabled={isLoading}
+            onChange={(e) => onFiltersChange({ ...filters, submarket: e.target.value })}
+          >
+            <option value="">All categories</option>
+            {submarkets.map((sm) => (
+              <option key={sm} value={sm}>
+                {sm}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      <div>
+        <label className="block text-xs text-muted-foreground mb-1">Search</label>
+        <input
+          className="w-full rounded-lg border border-border bg-background px-3 py-2"
+          placeholder="Search by symbol or name…"
+          value={filters.q}
+          onChange={(e) => onFiltersChange({ ...filters, q: e.target.value })}
+        />
+      </div>
+
+      <div>
+        <label className="block text-xs text-muted-foreground mb-1">Symbol</label>
+        <select
+          className="w-full rounded-lg border border-border bg-background px-3 py-2"
+          value={String(symbol ?? "")}
+          disabled={isLoading}
+          onChange={(e) => onSymbolChange(e.target.value)}
+        >
+          {!currentInList && symbol ? (
+            <option value={symbol}>Custom: {symbol}</option>
+          ) : null}
+
+          {filtered.slice(0, 500).map((i: any) => {
+            const sym = String(i?.symbol ?? "");
+            const label = instrumentLabel(i);
+            const meta = `${instrumentMarket(i)} • ${instrumentSubmarket(i)}`;
+            return (
+              <option key={sym} value={sym}>
+                {label} — {meta}
+              </option>
+            );
+          })}
+        </select>
+
+        {filtered.length > 500 ? (
+          <div className="mt-1 text-[11px] text-muted-foreground">Showing first 500 instruments for performance.</div>
+        ) : null}
+      </div>
     </div>
   );
 }
