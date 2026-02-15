@@ -33,6 +33,22 @@ type BotCfg = {
   enabled?: boolean;
 };
 
+// Global risk rules (applies to ALL bots/runs for the user)
+// max_daily_loss: set to 0 to disable (server supports this)
+type RiskRules = {
+  risk_type?: "fixed_stake" | "percent_balance";
+  fixed_stake?: number;
+  percent_risk?: number;
+  max_daily_loss?: number;
+  max_drawdown?: number;
+  max_open_trades?: number;
+  adaptive_enabled?: boolean;
+  adaptive_min_percent?: number;
+  adaptive_max_percent?: number;
+  adaptive_step?: number;
+  adaptive_lookback?: number;
+};
+
 export default function BotCenter() {
   const { toast } = useToast();
   const { data: accounts } = useAccounts();
@@ -62,6 +78,11 @@ export default function BotCenter() {
   // multiple bots (each its own identical card)
   const [bots, setBots] = usePersistedState<BotCfg[]>("bot:configs", []);
   const [editingBotId, setEditingBotId] = reactUseState<string | null>(null);
+
+  // ✅ Risk settings state (global for user)
+  const [risk, setRisk] = reactUseState<RiskRules | null>(null);
+  const [savingRisk, setSavingRisk] = reactUseState(false);
+  const [lastMaxDailyLoss, setLastMaxDailyLoss] = reactUseState<number>(50);
 
   // Keep server awake while this page is open (poll /api/health every 4 minutes)
   useKeepAlive(true, 240_000);
@@ -100,6 +121,51 @@ export default function BotCenter() {
       return changed ? next : prev;
     });
   }, [availableAccounts, accountId, setAccountId, setBots]);
+
+  // ✅ Load risk rules once (global)
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const r = await apiFetch("/api/settings/risk");
+        const j = (await r.json()) as RiskRules;
+
+        if (!alive) return;
+
+        const mdl = Number((j as any)?.max_daily_loss ?? 0);
+        if (Number.isFinite(mdl) && mdl > 0) setLastMaxDailyLoss(mdl);
+
+        setRisk(j ?? {});
+      } catch {
+        // keep risk card hidden if endpoint fails
+        if (alive) setRisk(null);
+      }
+    })();
+
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const saveRisk = async (next: RiskRules) => {
+    try {
+      setSavingRisk(true);
+      await apiFetch("/api/settings/risk", {
+        method: "PUT",
+        body: JSON.stringify(next ?? {}),
+      });
+      setRisk(next);
+      toast({ title: "Risk settings saved" });
+    } catch (e: any) {
+      toast({
+        title: "Failed to save risk settings",
+        description: String(e?.message ?? e),
+        variant: "destructive",
+      });
+    } finally {
+      setSavingRisk(false);
+    }
+  };
 
   // helper to compute execution unit from timeframe
   const computeExecUnit = (tf: string): DurationUnit => {
@@ -358,6 +424,8 @@ export default function BotCenter() {
     }
   };
 
+  const maxDailyLossEnabled = Number(risk?.max_daily_loss ?? 0) > 0;
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -372,6 +440,75 @@ export default function BotCenter() {
         </span>
       </div>
       <div className="text-sm text-muted-foreground">Manage strategy & execution</div>
+
+      {/* ✅ Global risk settings */}
+      {risk && (
+        <div className="rounded-2xl border border-border bg-card p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="font-semibold">Risk limits</div>
+              <div className="text-sm text-muted-foreground">
+                Global (applies to all bots). If enabled, the server will block new trades when the limit is reached.
+              </div>
+            </div>
+            <button
+              type="button"
+              disabled={savingRisk}
+              onClick={() => saveRisk(risk)}
+              className="rounded-lg bg-ysbPurple px-3 py-2 text-sm font-semibold text-ysbYellow hover:opacity-90 disabled:opacity-50"
+              title="Save risk limits"
+            >
+              Save
+            </button>
+          </div>
+
+          <div className="mt-4 grid gap-3 md:grid-cols-3 items-end">
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={maxDailyLossEnabled}
+                onChange={(e) => {
+                  const enabled = e.target.checked;
+                  const current = Number(risk?.max_daily_loss ?? 0);
+
+                  if (enabled) {
+                    const nextVal = lastMaxDailyLoss > 0 ? lastMaxDailyLoss : 50;
+                    setRisk((r) => ({ ...(r ?? {}), max_daily_loss: nextVal }));
+                  } else {
+                    if (current > 0) setLastMaxDailyLoss(current);
+                    setRisk((r) => ({ ...(r ?? {}), max_daily_loss: 0 }));
+                  }
+                }}
+              />
+              <label className="text-sm">Enable max daily loss</label>
+            </div>
+
+            <div>
+              <label className="block text-sm mb-1">Max daily loss ($)</label>
+              <input
+                type="number"
+                min={0}
+                step={1}
+                disabled={!maxDailyLossEnabled}
+                className="w-full rounded-lg border border-border bg-background px-3 py-2 disabled:opacity-50"
+                value={Number(risk?.max_daily_loss ?? 0)}
+                onChange={(e) => {
+                  const v = Math.max(0, Number(e.target.value));
+                  if (v > 0) setLastMaxDailyLoss(v);
+                  setRisk((r) => ({ ...(r ?? {}), max_daily_loss: v }));
+                }}
+              />
+              <div className="mt-1 text-xs text-muted-foreground">
+                Set to <span className="font-mono">0</span> to disable.
+              </div>
+            </div>
+
+            <div className="text-xs text-muted-foreground md:text-right">
+              Your logs show: <span className="font-mono">risk block: max daily loss reached</span>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Cards grid: responsive left-to-right */}
       <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
