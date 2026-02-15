@@ -1041,16 +1041,25 @@ function StrategySettingsModal({
             />
           </div>
 
-          {/* Early sell toggle + conditional input */}
-          <div className="rounded-xl border border-border p-3">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <div className="text-sm font-medium">Early sell</div>
-                <div className="text-xs text-muted-foreground">
-                  {earlyEnabled ? "Disable" : "Enable"}
-                </div>
-              </div>
+          {/* ✅ Early sell (same pattern as Max daily loss: input + enable below) */}
+          <div>
+            <label className="block text-sm mb-1">Early sell profit (USD)</label>
+            <input
+              type="number"
+              min={0}
+              step={0.01}
+              disabled={!earlyEnabled}
+              className="w-full rounded-lg border border-border bg-background px-3 py-2 disabled:opacity-50"
+              value={Math.max(0, Number(form.early_sell_profit ?? 0) || 0)}
+              onChange={(e) =>
+                setForm((f) => ({
+                  ...f,
+                  early_sell_profit: Math.max(0, Number(e.target.value) || 0),
+                }))
+              }
+            />
 
+            <div className="mt-2 flex items-center gap-2">
               <button
                 type="button"
                 aria-label={earlyEnabled ? "Disable early sell" : "Enable early sell"}
@@ -1068,26 +1077,11 @@ function StrategySettingsModal({
                   ].join(" ")}
                 />
               </button>
+              <label className="text-sm select-none">Enable early sell</label>
             </div>
-
-            {earlyEnabled && (
-              <div className="mt-3">
-                <label className="block text-sm mb-1">Early sell profit (USD)</label>
-                <input
-                  type="number"
-                  min={0}
-                  step={0.01}
-                  className="w-full rounded-lg border border-border bg-background px-3 py-2"
-                  value={Math.max(0, Number(form.early_sell_profit ?? 0) || 0)}
-                  onChange={(e) =>
-                    setForm((f) => ({ ...f, early_sell_profit: Math.max(0, Number(e.target.value) || 0) }))
-                  }
-                />
-              </div>
-            )}
           </div>
 
-          {/* ✅ Risk limits (styled like other settings: label + input, enable below) */}
+          {/* ✅ Risk limits (max daily loss uses toggle switch too) */}
           {risk && (
             <div>
               <div className="flex items-center justify-between">
@@ -1110,11 +1104,12 @@ function StrategySettingsModal({
               />
 
               <div className="mt-2 flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={mdlEnabled}
-                  onChange={(e) => {
-                    const enabled = e.target.checked;
+                <button
+                  type="button"
+                  aria-label={mdlEnabled ? "Disable max daily loss" : "Enable max daily loss"}
+                  aria-pressed={mdlEnabled}
+                  onClick={() => {
+                    const enabled = !mdlEnabled;
                     setMdlEnabled(enabled);
 
                     if (!enabled) {
@@ -1125,10 +1120,23 @@ function StrategySettingsModal({
                     }
 
                     // enabling: if empty/invalid, restore a sensible value
-                    setMdlValue((v) => (Number.isFinite(v) && v > 0 ? v : Math.max(0, Number(lastMaxDailyLoss ?? 50) || 50)));
+                    setMdlValue((v) =>
+                      Number.isFinite(v) && v > 0 ? v : Math.max(0, Number(lastMaxDailyLoss ?? 50) || 50),
+                    );
                   }}
-                />
-                <label className="text-sm">Enable max daily loss</label>
+                  className={[
+                    "relative inline-flex h-6 w-11 items-center rounded-full border transition-colors",
+                    mdlEnabled ? "bg-emerald-500/20 border-emerald-500/40" : "bg-muted/40 border-border",
+                  ].join(" ")}
+                >
+                  <span
+                    className={[
+                      "inline-block h-5 w-5 transform rounded-full bg-white/90 shadow transition-transform",
+                      mdlEnabled ? "translate-x-5" : "translate-x-1",
+                    ].join(" ")}
+                  />
+                </button>
+                <label className="text-sm select-none">Enable max daily loss</label>
               </div>
             </div>
           )}
