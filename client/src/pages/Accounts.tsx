@@ -3,6 +3,7 @@ import { useAccounts, useUpsertDerivAccount, useUpsertMt5Account } from "@/hooks
 import { useToast } from "@/hooks/use-toast";
 import { useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/api";
+import { api } from "@shared/routes";
 
 export default function Accounts() {
   const { data: accounts } = useAccounts();
@@ -10,6 +11,13 @@ export default function Accounts() {
   const upsertDeriv = useUpsertDerivAccount();
   const upsertMt5 = useUpsertMt5Account();
   const qc = useQueryClient();
+
+  const accountsKey = [api.accounts.list.path] as const;
+
+  const refreshAccounts = async () => {
+    await qc.invalidateQueries({ queryKey: accountsKey });
+    await qc.refetchQueries({ queryKey: accountsKey });
+  };
 
   const [label, setLabel] = useState("Deriv Main");
   const [token, setToken] = useState("");
@@ -50,7 +58,9 @@ export default function Accounts() {
       await upsertDeriv.mutateAsync({ label: l, token: t });
       toast({ title: "Deriv account saved", description: "Token stored encrypted on server." });
       setToken("");
-      await qc.invalidateQueries({ queryKey: ["accounts"] });
+
+      // hooks invalidate too, but refetch here for instant UI update
+      await refreshAccounts();
     } catch (e: any) {
       toast({ title: "Error", description: String(e.message ?? e), variant: "destructive" });
     }
@@ -65,7 +75,8 @@ export default function Accounts() {
       await upsertMt5.mutateAsync({ label: l, server: server.trim(), login: login.trim(), password });
       toast({ title: "MT5 account saved", description: "Validation runs via optional worker." });
       setPassword("");
-      await qc.invalidateQueries({ queryKey: ["accounts"] });
+
+      await refreshAccounts();
     } catch (e: any) {
       toast({ title: "Error", description: String(e.message ?? e), variant: "destructive" });
     }
@@ -91,7 +102,8 @@ export default function Accounts() {
       toast({ title: "Renamed", description: "Account label updated." });
       setRenamingId(null);
       setRenameLabel("");
-      await qc.invalidateQueries({ queryKey: ["accounts"] });
+
+      await refreshAccounts();
     } catch (e: any) {
       toast({ title: "Error", description: String(e.message ?? e), variant: "destructive" });
     }
@@ -132,7 +144,8 @@ export default function Accounts() {
 
       toast({ title: "Updated", description: "Account credentials updated." });
       cancelEditSecrets();
-      await qc.invalidateQueries({ queryKey: ["accounts"] });
+
+      await refreshAccounts();
     } catch (e: any) {
       toast({ title: "Error", description: String(e.message ?? e), variant: "destructive" });
     }
@@ -154,7 +167,8 @@ export default function Accounts() {
       }
 
       toast({ title: "Removed", description: "Account deleted." });
-      await qc.invalidateQueries({ queryKey: ["accounts"] });
+
+      await refreshAccounts();
     } catch (e: any) {
       toast({ title: "Error", description: String(e.message ?? e), variant: "destructive" });
     }
@@ -227,6 +241,7 @@ export default function Accounts() {
       <div className="rounded-2xl border border-border bg-card p-4">
         <div className="font-semibold mb-2">Connected Accounts</div>
         <div className="text-sm text-muted-foreground mb-3">Accounts are stored in Supabase; secrets are encrypted server-side.</div>
+
         <div className="space-y-2">
           {(accounts ?? []).map((a) => {
             const isRenaming = renamingId === a.id;
