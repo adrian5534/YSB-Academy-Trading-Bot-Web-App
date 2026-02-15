@@ -86,36 +86,44 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         description: String(e?.message ?? e),
         variant: "destructive",
       });
-      await signOutLocal(); // still get user out locally
+      await signOutLocal();
     }
   };
 
   return (
-    <div className="min-h-screen grid grid-cols-[260px_1fr]">
-      <aside className="border-r border-border bg-card p-4">
-        <div className="flex items-center gap-2 mb-6">
-          <div className="h-9 w-9 rounded-lg bg-ysbPurple grid place-items-center text-ysbYellow font-bold">Y</div>
-          <div>
-            <div className="font-semibold">YSB Academy</div>
-            <div className="text-xs text-muted-foreground">Trading Bot</div>
+    <div className="app-shell">
+      <aside className="app-shell__aside border-border bg-card">
+        <div className="app-shell__header">
+          <div className="flex items-center gap-2">
+            <div className="h-9 w-9 rounded-lg bg-ysbPurple grid place-items-center text-ysbYellow font-bold">Y</div>
+            <div className="leading-tight">
+              <div className="font-semibold">YSB Academy</div>
+              <div className="text-xs text-muted-foreground">Trading Bot</div>
+            </div>
           </div>
         </div>
 
-        <nav className="space-y-1">
+        <nav className="app-shell__nav">
           {items.map((n) => {
             const active = loc === n.href;
             const Icon = n.icon;
             return (
               <Link key={n.href} href={n.href}>
-                <a className={cn("block rounded-lg px-3 py-2 text-sm hover:bg-muted/40", active ? "bg-muted/60" : "")}>
+                <a
+                  className={cn(
+                    "app-shell__navItem",
+                    "rounded-lg px-3 py-2 text-sm hover:bg-muted/40",
+                    active ? "bg-muted/60" : ""
+                  )}
+                >
                   <span className="inline-flex items-center gap-2">
                     <Icon size={16} className={active ? "text-ysbYellow" : "text-muted-foreground"} />
                     {active ? (
-                      <motion.span layoutId="nav" className="text-foreground">
+                      <motion.span layoutId="nav" className="text-foreground whitespace-nowrap">
                         {n.label}
                       </motion.span>
                     ) : (
-                      <span className="text-muted-foreground">{n.label}</span>
+                      <span className="text-muted-foreground whitespace-nowrap">{n.label}</span>
                     )}
                   </span>
                 </a>
@@ -124,22 +132,24 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           })}
         </nav>
 
-        <button
-          onClick={() => void signOutLocal()}
-          className="mt-6 w-full rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground"
-        >
-          Sign out
-        </button>
+        <div className="app-shell__actions">
+          <button
+            onClick={() => void signOutLocal()}
+            className="w-full rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground"
+          >
+            Sign out
+          </button>
 
-        <button
-          onClick={() => void signOutEverywhere()}
-          className="mt-2 w-full rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground"
-        >
-          Sign out everywhere
-        </button>
+          <button
+            onClick={() => void signOutEverywhere()}
+            className="w-full rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground"
+          >
+            Sign out everywhere
+          </button>
+        </div>
       </aside>
 
-      <main className="p-6">{children}</main>
+      <main className="app-shell__main">{children}</main>
     </div>
   );
 }
