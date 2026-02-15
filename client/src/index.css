@@ -3,11 +3,33 @@
 @tailwind utilities;
 
 :root { color-scheme: dark; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  background: hsl(222 47% 11%);
+  color: hsl(210 40% 98%);
+}
+a { color: inherit; }
 
-html, body { height: 100%; overflow-x: hidden; }
-body.drawer-open { overflow: hidden; }
+/* ===== Global fixes ===== */
+html,
+body {
+  overflow-x: hidden; /* prevents the right-side "white line" caused by overflow */
+}
 
-/* Base layout */
+body.drawer-open {
+  overflow: hidden; /* lock scroll when the mobile drawer is open */
+}
+
+/* Tailwind preflight sets a light default border-color; ensure app chrome uses dark borders */
+.app-shell__topbar,
+.app-shell__aside,
+.app-shell__drawer {
+  border-color: rgba(255, 255, 255, 0.10);
+}
+
+/* ===== AppShell (mobile-first) ===== */
 .app-shell {
   min-height: 100vh;
   display: flex;
@@ -15,9 +37,7 @@ body.drawer-open { overflow: hidden; }
   overflow-x: hidden;
 }
 
-.app-shell__main { padding: 16px; }
-
-/* Mobile topbar (visible < 992px) */
+/* Mobile topbar (< 992px) */
 .app-shell__topbar {
   position: sticky;
   top: 0;
@@ -28,7 +48,7 @@ body.drawer-open { overflow: hidden; }
   gap: 12px;
   padding: 12px 14px;
   border-bottom-width: 1px;
-  border-color: rgba(255,255,255,0.10);
+  background: inherit;
 }
 
 /* Hamburger */
@@ -36,21 +56,23 @@ body.drawer-open { overflow: hidden; }
   height: 40px;
   width: 44px;
   border-radius: 10px;
-  border: 1px solid rgba(255,255,255,0.12);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   background: transparent;
   display: grid;
   place-items: center;
 }
-.app-shell__hamburger:hover { background: rgba(255,255,255,0.04); }
+.app-shell__hamburger:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
 
-/* ✅ Proper 3-line hamburger (middle line is the span; top/bottom are pseudos) */
+/* Proper 3-line hamburger */
 .app-shell__hamburgerLines {
   position: relative;
   display: inline-block;
   width: 18px;
-  height: 2px;                 /* middle line */
+  height: 2px; /* middle line */
   border-radius: 2px;
-  background: rgba(255,255,255,0.75);
+  background: rgba(255, 255, 255, 0.78);
 }
 .app-shell__hamburgerLines::before,
 .app-shell__hamburgerLines::after {
@@ -60,33 +82,34 @@ body.drawer-open { overflow: hidden; }
   width: 18px;
   height: 2px;
   border-radius: 2px;
-  background: rgba(255,255,255,0.75);
+  background: rgba(255, 255, 255, 0.78);
 }
-.app-shell__hamburgerLines::before { top: -6px; } /* top line */
-.app-shell__hamburgerLines::after { top: 6px; }   /* bottom line */
+.app-shell__hamburgerLines::before { top: -6px; }
+.app-shell__hamburgerLines::after { top: 6px; }
 
-/* Desktop sidebar hidden by default (mobile-first) */
-.app-shell__aside { display: none; }
+/* Desktop sidebar hidden on mobile */
+.app-shell__aside {
+  display: none;
+}
 
-/* Drawer */
+/* Drawer (mounted only when open in AppShell.tsx) */
 .app-shell__drawerOverlay {
   position: fixed;
   inset: 0;
   z-index: 45;
-  background: rgba(0,0,0,0.55);
+  background: rgba(0, 0, 0, 0.55);
 }
 
 .app-shell__drawer {
   position: fixed;
   top: 0;
   left: 0;
+  z-index: 50;
   height: 100vh;
   width: min(86vw, 360px);
-  z-index: 50;
   background: hsl(222 47% 11%);
   border-right-width: 1px;
-  border-color: rgba(255,255,255,0.10);
-  box-shadow: 18px 0 50px rgba(0,0,0,0.55);
+  box-shadow: 18px 0 50px rgba(0, 0, 0, 0.55);
 }
 
 .app-shell__drawerHeader {
@@ -95,18 +118,21 @@ body.drawer-open { overflow: hidden; }
   justify-content: space-between;
   gap: 10px;
   padding: 14px;
-  border-bottom: 1px solid rgba(255,255,255,0.10);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.10);
 }
 
 .app-shell__drawerClose {
   height: 36px;
   width: 40px;
   border-radius: 10px;
-  border: 1px solid rgba(255,255,255,0.12);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   background: transparent;
-  color: rgba(255,255,255,0.85);
+  color: rgba(255, 255, 255, 0.85);
   font-size: 22px;
   line-height: 1;
+}
+.app-shell__drawerClose:hover {
+  background: rgba(255, 255, 255, 0.04);
 }
 
 .app-shell__drawerBody {
@@ -116,10 +142,23 @@ body.drawer-open { overflow: hidden; }
   -webkit-overflow-scrolling: touch;
 }
 
-/* Nav spacing */
-.app-shell__header { margin-bottom: 10px; }
-.app-shell__nav { display: grid; gap: 6px; margin-top: 8px; }
-.app-shell__navItem { display: block; width: 100%; }
+/* Nav spacing under logo */
+.app-shell__header {
+  padding-bottom: 12px;
+  margin-bottom: 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.app-shell__nav {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.app-shell__navItem {
+  display: block;
+  width: 100%;
+}
 
 .app-shell__actions {
   margin-top: 12px;
@@ -127,19 +166,30 @@ body.drawer-open { overflow: hidden; }
   gap: 8px;
 }
 
-/* Breakpoints */
+.app-shell__main {
+  padding: 16px;
+}
+
+/* ===== Breakpoints (requested) ===== */
+/* 576px: Small devices (landscape phones) */
 @media (min-width: 576px) {
   .app-shell__main { padding: 18px; }
   .app-shell__drawer { width: min(82vw, 380px); }
 }
 
+/* 768px: Medium devices (tablets) */
 @media (min-width: 768px) {
   .app-shell__main { padding: 22px; }
   .app-shell__drawer { width: min(70vw, 420px); }
 }
 
+/* 992px: Large devices (desktops) */
 @media (min-width: 992px) {
-  .app-shell { display: grid; grid-template-columns: 260px 1fr; }
+  .app-shell {
+    display: grid;
+    grid-template-columns: 260px 1fr;
+  }
+
   .app-shell__topbar { display: none; }
 
   .app-shell__aside {
@@ -147,12 +197,19 @@ body.drawer-open { overflow: hidden; }
     min-height: 100vh;
     padding: 16px;
     border-right-width: 1px;
-    border-color: rgba(255,255,255,0.10);
+    background: inherit;
+  }
+
+  /* drawer should never be visible on desktop even if mounted */
+  .app-shell__drawer,
+  .app-shell__drawerOverlay {
+    display: none;
   }
 
   .app-shell__main { padding: 24px; }
 }
 
+/* 1200px: Extra-large devices (wide desktops) */
 @media (min-width: 1200px) {
   .app-shell { grid-template-columns: 280px 1fr; }
   .app-shell__aside { padding: 18px; }
