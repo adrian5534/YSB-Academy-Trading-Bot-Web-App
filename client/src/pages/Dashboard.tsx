@@ -111,11 +111,29 @@ export default function Dashboard() {
       accountId === "all" ? null : allAccounts.find((a) => String(a?.id) === String(accountId)) || null;
     const selectedType = selected?.type as string | undefined;
 
-    const getBalId = (a: any) => String(a?.id ?? a?.account_id ?? "");
     const toNum = (v: any) => {
       const n = Number(v);
       return Number.isFinite(n) ? n : null;
     };
+
+    // ✅ gather possible identifiers that the balances API might be using
+    const candidateIds = new Set(
+      [
+        accountId,
+        selected?.id,
+        selected?.account_id,
+        selected?.provider_account_id,
+        selected?.external_id,
+        selected?.loginid,
+        selected?.deriv_loginid,
+        selected?.deriv_account_id,
+      ]
+        .map((x) => (x == null ? "" : String(x)))
+        .filter((s) => s && s !== "undefined" && s !== "null")
+    );
+
+    const balRowId = (a: any) =>
+      String(a?.id ?? a?.account_id ?? a?.provider_account_id ?? a?.external_id ?? a?.loginid ?? "");
 
     if (bals.length) {
       if (accountId === "all") {
@@ -123,7 +141,8 @@ export default function Dashboard() {
         return { value: total, label: "Account Balance (All)" };
       }
 
-      const row = bals.find((a) => getBalId(a) === String(accountId));
+      // ✅ robust match (handles DB id vs provider id mismatches)
+      const row = bals.find((a) => candidateIds.has(balRowId(a)));
       const balNum = row ? toNum(row.balance) : null;
 
       if (balNum != null) {
@@ -133,16 +152,13 @@ export default function Dashboard() {
         };
       }
 
-      // If selected is non-Deriv, we don't have live balance
       if (selectedType && selectedType !== "deriv") {
         return { value: null, label: "Balance (Not available for this account type)" };
       }
 
-      // Deriv selected but no balance row/value -> likely invalid token or auth issue
       return { value: null, label: "Balance (Reconnect Deriv token or refresh)" };
     }
 
-    // Fallbacks (no balances yet)
     if (mode === "paper") {
       const base = 10000;
       return { value: base + totalProfit, label: accountId === "all" ? "Paper Balance (All)" : "Paper Balance" };
