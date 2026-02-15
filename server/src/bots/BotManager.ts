@@ -34,8 +34,23 @@ export class BotManager {
   private derivClients = new Map<string, DerivClient>();
   private openCounts = new Map<string, number>();
 
-  // ✅ throttle reconciliation per account
+  // ✅ throttle reconciliation per account (kept as accountId-keyed for backward behavior)
   private lastReconcileAt = new Map<string, number>();
+
+  // ✅ early-sell latch state (in-memory, per server process)
+  // contractId -> state
+  private earlySellState = new Map<
+    number,
+    { armed: boolean; threshold: number; armedAt: number; maxProfitSeen: number }
+  >();
+
+  // ✅ adaptive reconcile helpers (per user+account)
+  private hasEarlySellOpenByAccount = new Map<string, boolean>(); // key = `${userId}::${accountId}` -> boolean
+  private armedCountByAccount = new Map<string, number>(); // key = `${userId}::${accountId}` -> count
+  private contractToAccountKey = new Map<number, string>(); // contractId -> `${userId}::${accountId}`
+
+  private reconcileTimers = new Map<string, NodeJS.Timeout>(); // key = `${userId}::${accountId}`
+  private reconcileInFlight = new Set<string>(); // key = `${userId}::${accountId}`
 
   private runKey(userId: string, runId: string) {
     return `${userId}::${runId}`;
@@ -66,6 +81,43 @@ export class BotManager {
     for (const k of Array.from(this.openCounts.keys())) {
       if (k.startsWith(prefix)) this.openCounts.delete(k);
     }
+  }
+
+  private accountKey(userId: string, accountId: string) {
+    return `${userId}::${accountId}`;
+  }
+
+  private incArmed(accountKey: string) {
+    const n = (this.armedCountByAccount.get(accountKey) ?? 0) + 1;
+    this.armedCountByAccount.set(accountKey, n);
+  }
+
+  private decArmed(accountKey: string) {
+    const n = (this.armedCountByAccount.get(accountKey) ?? 0) - 1;
+    if (n <= 0) this.armedCountByAccount.delete(accountKey);
+    else this.armedCountByAccount.set(accountKey, n);
+  }
+
+  private deleteEarlySellState(contractId: number) {
+    const st = this.earlySellState.get(contractId);
+    if (st?.armed) {
+      const ak = this.contractToAccountKey.get(contractId);
+      if (ak) this.decArmed(ak);
+    }
+    this.earlySellState.delete(contractId);
+    this.contractToAccountKey.delete(contractId);
+  }
+
+  private scheduleReconcileSoon(userId: string, accountId: string, delayMs: number) {
+    const ak = this.accountKey(userId, accountId);
+    if (this.reconcileTimers.has(ak)) return; // don't stack timers
+    const t = setTimeout(() => {
+      this.reconcileTimers.delete(ak);
+      void this.reconcileAccountLiveTrades(userId, accountId, { force: true }).catch((e) =>
+        this.hub.log("reconcile (scheduled) failed", { accountId, error: String(e) }),
+      );
+    }, delayMs);
+    this.reconcileTimers.set(ak, t);
   }
 
   constructor(private hub: WsHub) {
@@ -118,9 +170,7 @@ export class BotManager {
 
     this.hub.log("bot.configs", { userId, runId, name, configs: bot.configs });
     bot.timer = setInterval(() => {
-      void this.tick(bot).catch((e: any) =>
-        this.hub.log(`tick error: ${e?.stack || e?.message || String(e)}`)
-      );
+      void this.tick(bot).catch((e: any) => this.hub.log(`tick error: ${e?.stack || e?.message || String(e)}`));
     }, 5000);
 
     this.hub.status(this.getStatus(userId));
@@ -152,7 +202,7 @@ export class BotManager {
       const liveAccountIds = Array.from(new Set(bot.configs.filter((c) => c.mode === "live").map((c) => c.account_id)));
       for (const accountId of liveAccountIds) {
         try {
-          await this.reconcileAccountLiveTrades(userId, accountId);
+          await this.reconcileAccountLiveTrades(userId, accountId, { force: true });
         } catch (e) {
           this.hub.log("reconcile on stop failed", { accountId, error: String(e) });
         }
@@ -188,95 +238,192 @@ export class BotManager {
     this.tradeToCfgKey.delete(tradeId);
   }
 
-  private async reconcileAccountLiveTrades(userId: string, accountId: string) {
-    // throttle: once every 15s per account
+  private async reconcileAccountLiveTrades(userId: string, accountId: string, opts?: { force?: boolean }) {
+    const ak = this.accountKey(userId, accountId);
+
+    // ✅ in-flight guard (prevents overlapping reconcile bursts)
+    if (this.reconcileInFlight.has(ak)) return;
+
     const now = Date.now();
     const last = this.lastReconcileAt.get(accountId) ?? 0;
-    if (now - last < 15_000) return;
+
+    // ✅ adaptive throttle: faster only when early-sell is relevant
+    const hasEarly = this.hasEarlySellOpenByAccount.get(ak) ?? false;
+    const armedCount = this.armedCountByAccount.get(ak) ?? 0;
+
+    const BASE_MS = 15_000;
+    const EARLY_MS = 3_000;
+    const ARMED_MS = 1_500;
+
+    const throttleMs = armedCount > 0 ? ARMED_MS : hasEarly ? EARLY_MS : BASE_MS;
+
+    if (!opts?.force) {
+      if (now - last < throttleMs) return;
+    }
+
+    // record last reconcile (even for forced runs) to keep behavior stable
     this.lastReconcileAt.set(accountId, now);
 
-    let token = "";
+    this.reconcileInFlight.add(ak);
     try {
-      token = await this.accountToken(accountId);
-    } catch (e) {
-      this.hub.log("reconcile: token decrypt failed", { accountId, error: String(e) });
-      return;
-    }
-    if (!token) return;
-
-    const deriv = await this.getDerivClient(accountId, token);
-
-    const { data: openTrades, error } = await supabaseAdmin
-      .from("trades")
-      .select("id, entry, opened_at, meta")
-      .eq("user_id", userId)
-      .eq("account_id", accountId)
-      .eq("mode", "live")
-      .is("closed_at", null)
-      .order("opened_at", { ascending: false })
-      .limit(50);
-
-    if (error) throw error;
-    if (!openTrades?.length) return;
-
-    const toNum = (v: any, fb = 0) => {
-      const n = typeof v === "number" ? v : Number(v);
-      return Number.isFinite(n) ? n : fb;
-    };
-
-    const canResell = (snap: any) => {
-      if (snap?.is_valid_to_sell === 1 || snap?.is_valid_to_sell === true) return true;
-      return false;
-    };
-
-    for (const tr of openTrades as any[]) {
-      const contractId = Number(tr?.meta?.contract_id ?? 0);
-      if (!contractId) continue;
-
-      let snap: any = null;
+      let token = "";
       try {
-        snap = await deriv.openContract(contractId);
-      } catch {
-        continue; // transient; leave open
+        token = await this.accountToken(accountId);
+      } catch (e) {
+        this.hub.log("reconcile: token decrypt failed", { accountId, error: String(e) });
+        return;
+      }
+      if (!token) return;
+
+      const deriv = await this.getDerivClient(accountId, token);
+
+      const { data: openTrades, error } = await supabaseAdmin
+        .from("trades")
+        .select("id, entry, opened_at, meta")
+        .eq("user_id", userId)
+        .eq("account_id", accountId)
+        .eq("mode", "live")
+        .is("closed_at", null)
+        .order("opened_at", { ascending: false })
+        .limit(50);
+
+      if (error) throw error;
+
+      if (!openTrades?.length) {
+        // no open trades => clear account-level flags and timers
+        this.hasEarlySellOpenByAccount.delete(ak);
+        const timer = this.reconcileTimers.get(ak);
+        if (timer) clearTimeout(timer);
+        this.reconcileTimers.delete(ak);
+        return;
       }
 
-      // If already settled, close in DB (existing behavior)
-      if (snap?.is_sold) {
-        const buyPrice = toNum(tr?.entry, 0);
-        const sellPrice = toNum(snap?.sell_price ?? snap?.bid_price, 0);
-        const profit = Number.isFinite(sellPrice) && Number.isFinite(buyPrice) ? sellPrice - buyPrice : 0;
-        const closedAt =
-          snap?.sell_time ? new Date(Number(snap.sell_time) * 1000).toISOString() : new Date().toISOString();
+      const toNum = (v: any, fb = 0) => {
+        const n = typeof v === "number" ? v : Number(v);
+        return Number.isFinite(n) ? n : fb;
+      };
 
+      const canResell = (s: any) => s?.is_valid_to_sell === 1 || s?.is_valid_to_sell === true;
+
+      // ✅ update “hasEarly” for next throttle decision (based on DB only; cheap)
+      const anyEarlyEnabled = (openTrades as any[]).some(
+        (tr) => Boolean(tr?.meta?.early_sell_enabled) && toNum(tr?.meta?.early_sell_profit, 0) > 0,
+      );
+      this.hasEarlySellOpenByAccount.set(ak, anyEarlyEnabled);
+
+      // ✅ cap Deriv openContract calls per pass
+      // (keeps API usage bounded even when polling more frequently)
+      const MAX_CHECK = armedCount > 0 ? 15 : anyEarlyEnabled ? 12 : 8;
+
+      // ✅ prioritize armed contracts first, then early-enabled, then the rest
+      const scored = (openTrades as any[]).map((tr) => {
+        const cid = Number(tr?.meta?.contract_id ?? 0);
+        const st = cid ? this.earlySellState.get(cid) : undefined;
+        const earlyEnabled = Boolean(tr?.meta?.early_sell_enabled) && toNum(tr?.meta?.early_sell_profit, 0) > 0;
+        const score = (st?.armed ? 100 : 0) + (earlyEnabled ? 10 : 0);
+        return { tr, cid, score };
+      });
+
+      scored.sort((a, b) => b.score - a.score);
+
+      let checked = 0;
+
+      for (const it of scored) {
+        if (checked >= MAX_CHECK) break;
+
+        const tr = it.tr;
+        const contractId = it.cid;
+        if (!contractId) continue;
+
+        // map contract -> account for correct armed counts / cleanup
+        this.contractToAccountKey.set(contractId, ak);
+
+        let snap: any = null;
         try {
-          const { data: updated } = await supabaseAdmin
-            .from("trades")
-            .update({ exit: sellPrice, profit, closed_at: closedAt })
-            .eq("id", tr.id)
-            .select("*")
-            .single();
-
-          if (updated) this.hub.trade(updated);
-          this.releaseOpenOnceByTradeId(String(tr.id));
-          this.hub.log("reconciled live trade closed", { tradeId: tr.id, contractId, sellPrice, profit });
-        } catch (e) {
-          this.hub.log("reconcile: db update failed", { tradeId: tr.id, error: String(e) });
+          snap = await deriv.openContract(contractId);
+        } catch {
+          continue; // transient; leave open
+        } finally {
+          checked++;
         }
-        continue;
-      }
 
-      // ✅ Early-sell logic (only if enabled)
-      const earlyEnabled = Boolean(tr?.meta?.early_sell_enabled ?? false);
-      const earlySellProfit = earlyEnabled ? toNum(tr?.meta?.early_sell_profit ?? 0, 0) : 0;
+        // If already settled, close in DB (existing behavior)
+        if (snap?.is_sold) {
+          this.deleteEarlySellState(contractId);
 
-      if (earlySellProfit > 0) {
+          const buyPrice = toNum(tr?.entry, 0);
+          const sellPrice = toNum(snap?.sell_price ?? snap?.bid_price, 0);
+          const profit = Number.isFinite(sellPrice) && Number.isFinite(buyPrice) ? sellPrice - buyPrice : 0;
+          const closedAt =
+            snap?.sell_time ? new Date(Number(snap.sell_time) * 1000).toISOString() : new Date().toISOString();
+
+          try {
+            const { data: updated } = await supabaseAdmin
+              .from("trades")
+              .update({ exit: sellPrice, profit, closed_at: closedAt })
+              .eq("id", tr.id)
+              .select("*")
+              .single();
+
+            if (updated) this.hub.trade(updated);
+            this.releaseOpenOnceByTradeId(String(tr.id));
+            this.hub.log("reconciled live trade closed", { tradeId: tr.id, contractId, sellPrice, profit });
+          } catch (e) {
+            this.hub.log("reconcile: db update failed", { tradeId: tr.id, error: String(e) });
+          }
+          continue;
+        }
+
+        // Early-sell logic (only if enabled)
+        const earlyEnabled = Boolean(tr?.meta?.early_sell_enabled ?? false);
+        const earlySellProfit = earlyEnabled ? toNum(tr?.meta?.early_sell_profit ?? 0, 0) : 0;
+
+        // If disabled, ensure latch state is cleared
+        if (!earlyEnabled || earlySellProfit <= 0) {
+          this.deleteEarlySellState(contractId);
+          continue;
+        }
+
         const profitNow = toNum(snap?.profit ?? 0, 0);
 
-        if (profitNow >= earlySellProfit && canResell(snap)) {
+        // Arm once profit first reaches threshold (even if not sellable yet)
+        const st =
+          this.earlySellState.get(contractId) ?? {
+            armed: false,
+            threshold: earlySellProfit,
+            armedAt: 0,
+            maxProfitSeen: Number.NEGATIVE_INFINITY,
+          };
+
+        st.threshold = earlySellProfit;
+        st.maxProfitSeen = Math.max(st.maxProfitSeen, profitNow);
+
+        if (!st.armed && profitNow >= earlySellProfit) {
+          st.armed = true;
+          st.armedAt = Date.now();
+          this.incArmed(ak);
+
+          this.hub.log("early sell armed", {
+            tradeId: tr.id,
+            contractId,
+            profitNow,
+            threshold: earlySellProfit,
+          });
+
+          // ✅ when armed, schedule a fast follow-up reconcile for this account
+          this.scheduleReconcileSoon(userId, accountId, 1500);
+        }
+
+        this.earlySellState.set(contractId, st);
+
+        // ✅ Safety: once armed, only sell if sellable AND profit is non-negative
+        // This avoids “armed at +X, sell later at -Y”.
+        const minProfitToSell = 0;
+
+        if (st.armed && canResell(snap) && profitNow >= minProfitToSell) {
           try {
             await deriv.sellContract(contractId, 0);
 
-            // confirm sold (or at least get the final sell_price)
             const snap2 = await deriv.openContract(contractId).catch(() => null);
 
             if (snap2?.is_sold) {
@@ -308,14 +455,33 @@ export class BotManager {
                 threshold: earlySellProfit,
                 sellPrice,
               });
+
+              this.deleteEarlySellState(contractId);
             } else {
-              this.hub.log("early sell attempted (not sold yet)", { tradeId: tr.id, contractId, profitNow, threshold: earlySellProfit });
+              this.hub.log("early sell attempted (not sold yet)", {
+                tradeId: tr.id,
+                contractId,
+                profitNow,
+                threshold: earlySellProfit,
+              });
+
+              // still armed -> try again soon, but bounded by in-flight/timer logic
+              this.scheduleReconcileSoon(userId, accountId, 1500);
             }
           } catch (e) {
             this.hub.log("early sell failed", { tradeId: tr.id, contractId, error: String(e) });
+            // keep armed; retry soon
+            this.scheduleReconcileSoon(userId, accountId, 1500);
           }
         }
       }
+
+      // If anything is still armed for this account, keep the fast loop alive
+      if ((this.armedCountByAccount.get(ak) ?? 0) > 0) {
+        this.scheduleReconcileSoon(userId, accountId, 1500);
+      }
+    } finally {
+      this.reconcileInFlight.delete(ak);
     }
   }
 
@@ -327,10 +493,7 @@ export class BotManager {
       try {
         if (msg?.tick) this.handleTickSafely(msg.tick);
       } catch (e) {
-        console.error(
-          "tick error (per-account)",
-          (e as any) && ((e as any).stack || (e as any).message || e)
-        );
+        console.error("tick error (per-account)", (e as any) && ((e as any).stack || (e as any).message || e));
         try {
           console.debug("tick payload (per-account):", JSON.stringify(msg));
         } catch {}
@@ -342,11 +505,7 @@ export class BotManager {
   }
 
   private async accountToken(accountId: string): Promise<string> {
-    const { data, error } = await supabaseAdmin
-      .from("accounts")
-      .select("secrets")
-      .eq("id", accountId)
-      .maybeSingle();
+    const { data, error } = await supabaseAdmin.from("accounts").select("secrets").eq("id", accountId).maybeSingle();
     if (error) throw error;
     const secrets = (data?.secrets ?? {}) as any;
     const enc = secrets?.deriv_token_enc;
@@ -367,10 +526,11 @@ export class BotManager {
       try {
         await this.runConfig(bot, cfg);
       } catch (e: any) {
-        this.hub.log(
-          `runConfig error: ${e?.stack || e?.message || String(e)}`,
-          { symbol: cfg.symbol, timeframe: cfg.timeframe, strategy_id: cfg.strategy_id }
-        );
+        this.hub.log(`runConfig error: ${e?.stack || e?.message || String(e)}`, {
+          symbol: cfg.symbol,
+          timeframe: cfg.timeframe,
+          strategy_id: cfg.strategy_id,
+        });
       }
     }
   }
@@ -628,9 +788,7 @@ export class BotManager {
             const sellPrice = Number(snap?.sell_price ?? snap?.bid_price ?? 0);
             const profit = Number.isFinite(sellPrice) && Number.isFinite(buyPrice) ? sellPrice - buyPrice : 0;
             const closedAt =
-              snap?.is_sold && snap?.sell_time
-                ? new Date(Number(snap.sell_time) * 1000).toISOString()
-                : new Date().toISOString();
+              snap?.is_sold && snap?.sell_time ? new Date(Number(snap.sell_time) * 1000).toISOString() : new Date().toISOString();
 
             if (tradeId) {
               const { data: updated } = await supabaseAdmin
@@ -822,9 +980,6 @@ function timeframeToSec(timeframe: string): number {
   if (allowed.includes(seconds)) return seconds;
 
   // Otherwise, snap to the nearest supported granularity
-  const nearest = allowed.reduce(
-    (best, g) => (Math.abs(g - seconds!) < Math.abs(best - seconds!) ? g : best),
-    allowed[0],
-  );
+  const nearest = allowed.reduce((best, g) => (Math.abs(g - seconds!) < Math.abs(best - seconds!) ? g : best), allowed[0]);
   return nearest;
 }
