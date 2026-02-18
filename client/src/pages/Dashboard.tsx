@@ -219,6 +219,7 @@ export default function Dashboard() {
         </div>
       </motion.div>
 
+      {/* Stats grid: keep iPad at 3 cols, only go 6 cols on xl+ */}
       <div className="dashboard-stats grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
         <StatCard
           title="Total PnL"
@@ -265,8 +266,8 @@ export default function Dashboard() {
         />
       </div>
 
-      {/* Panels row: stacked on mobile, side-by-side on lg+ */}
-      <div className="dashboard-panels grid gap-4 lg:grid-cols-2">
+      {/* Panels: stack on iPad, only side-by-side on xl+ */}
+      <div className="dashboard-panels grid gap-4 xl:grid-cols-2">
         <LiveChart
           trades={filteredTrades}
           baseEquity={mode === "paper" ? 10000 : 0}

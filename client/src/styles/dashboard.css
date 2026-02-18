@@ -124,7 +124,7 @@
   height: 16px;
 }
 
-@media (min-width: 992px) {
+@media (min-width: 1024px) {
   .stat-card__icon svg {
     width: 18px;
     height: 18px;
