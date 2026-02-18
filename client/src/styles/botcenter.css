@@ -1,0 +1,28 @@
+/* Prevent flex children from overflowing their card */
+.bot-card__actions,
+.bot-card__rightActions {
+  min-width: 0;
+}
+
+.bot-card__rightActions > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* On small screens: right-side controls can wrap and use full width */
+@media (max-width: 575.98px) {
+  .bot-card__rightActions {
+    width: 100%;
+  }
+
+  .bot-card__rightActions select,
+  .bot-card__rightActions button {
+    flex: 1 1 100%;
+    width: 100%;
+  }
+}
+
+/* Keep Remove from forcing overflow */
+.bot-card__remove {
+  white-space: nowrap;
+}
