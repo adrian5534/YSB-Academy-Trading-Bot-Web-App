@@ -691,10 +691,7 @@ export default function BotCenter() {
 
         {/* Extra bot cards (identical layout) */}
         {bots.map((b: any) => (
-          <div
-            key={b.id}
-            className="rounded-2xl border border-border bg-card p-4 flex flex-col gap-4 h-full"
-          >
+          <div key={b.id} className="rounded-2xl border border-border bg-card p-4 space-y-4">
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="rounded-xl border border-border bg-background p-3">
                 <div className="text-sm text-muted-foreground">Strategy</div>
@@ -795,29 +792,8 @@ export default function BotCenter() {
                 ))}
               </select>
             </div>
-
-            {/* EXTRA card action row */}
-            <div className="mt-auto flex flex-wrap items-center gap-2">
-              <button
-                onClick={() => startSingle(b)}
-                disabled={!b.strategy_id || !b.account_id || (!isPro && (b.mode === "paper" || b.mode === "live"))}
-                className={`rounded-lg px-3 py-2 font-semibold ${
-                  !b.strategy_id || !b.account_id || (!isPro && (b.mode === "paper" || b.mode === "live"))
-                    ? "border border-border bg-muted text-muted-foreground cursor-not-allowed"
-                    : "bg-ysbPurple text-ysbYellow hover:opacity-90"
-                }`}
-              >
-                {isRunRunning(runIdOf(b)) ? "RESTART" : "START"}
-              </button>
-
-              <button
-                onClick={() => stopRun(runIdOf(b))}
-                className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground"
-              >
-                Stop
-              </button>
-
-              {/* Right-side controls: full width on small screens so Remove can't hang off */}
+            
+             {/* Right-side controls: full width on small screens so Remove can't hang off */}
               <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:ml-auto sm:w-auto">
                 <div className="min-w-0">
                   <select
@@ -853,6 +829,29 @@ export default function BotCenter() {
                 >
                   Remove
                 </button>
+
+            {/* EXTRA card action row - replace the whole <div className="flex items-center gap-2">...</div> */}
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                onClick={() => startSingle(b)}
+                disabled={!b.strategy_id || !b.account_id || (!isPro && (b.mode === "paper" || b.mode === "live"))}
+                className={`rounded-lg px-3 py-2 font-semibold ${
+                  !b.strategy_id || !b.account_id || (!isPro && (b.mode === "paper" || b.mode === "live"))
+                    ? "border border-border bg-muted text-muted-foreground cursor-not-allowed"
+                    : "bg-ysbPurple text-ysbYellow hover:opacity-90"
+                }`}
+              >
+                {isRunRunning(runIdOf(b)) ? "RESTART" : "START"}
+              </button>
+
+              <button
+                onClick={() => stopRun(runIdOf(b))}
+                className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground"
+              >
+                Stop
+              </button>
+
+             
               </div>
             </div>
           </div>
