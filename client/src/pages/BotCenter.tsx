@@ -1,4 +1,3 @@
-import "@/styles/botcenter.css";
 import { useEffect, useMemo } from "react";
 import { useAccounts } from "@/hooks/use-accounts";
 import { useStartBot, useStopBot, useBotStatus } from "@/hooks/use-bots";
@@ -638,8 +637,7 @@ export default function BotCenter() {
             </select>
           </div>
 
-          {/* Actions (Primary) */}
-          <div className="bot-card__actions flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-2">
             <button
               onClick={start}
               disabled={!strategyId || (!isPro && (mode === "paper" || mode === "live"))}
@@ -651,15 +649,13 @@ export default function BotCenter() {
             >
               {isRunRunning(runIdPrimary) ? "RESTART" : "START"}
             </button>
-
             <button
               onClick={() => stopRun(runIdPrimary)}
               className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground"
             >
               Stop
             </button>
-
-            <div className="bot-card__rightActions flex flex-wrap items-center gap-2 sm:ml-auto">
+            <div className="ml-auto flex items-center gap-2">
               <select
                 className="rounded-lg border border-border bg-background px-3 py-2 text-sm"
                 value={mode}
@@ -673,17 +669,14 @@ export default function BotCenter() {
                   Live{!isPro ? " (Pro only)" : ""}
                 </option>
               </select>
-
-              {/* PRIMARY card: replace the ⚙️ button with this */}
               <button
                 type="button"
                 onClick={() => strategyId && setShowSettings(true)}
-                className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted whitespace-nowrap"
+                className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted"
                 title="Strategy settings"
                 disabled={!strategyId}
               >
-                <span aria-hidden="true">⚙️</span>
-                <span>Settings</span>
+                ⚙️
               </button>
             </div>
           </div>
@@ -793,8 +786,7 @@ export default function BotCenter() {
               </select>
             </div>
 
-            {/* Actions (Extra bot card) */}
-            <div className="bot-card__actions flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-2">
               <button
                 onClick={() => startSingle(b)}
                 disabled={!b.strategy_id || !b.account_id || (!isPro && (b.mode === "paper" || b.mode === "live"))}
@@ -806,15 +798,13 @@ export default function BotCenter() {
               >
                 {isRunRunning(runIdOf(b)) ? "RESTART" : "START"}
               </button>
-
               <button
                 onClick={() => stopRun(runIdOf(b))}
                 className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground"
               >
                 Stop
               </button>
-
-              <div className="bot-card__rightActions flex flex-wrap items-center gap-2 sm:ml-auto">
+              <div className="ml-auto flex items-center gap-2">
                 <select
                   className="rounded-lg border border-border bg-background px-3 py-2 text-sm"
                   value={b.mode}
@@ -828,23 +818,19 @@ export default function BotCenter() {
                     Live{!isPro ? " (Pro only)" : ""}
                   </option>
                 </select>
-
-                {/* EXTRA bot card: replace the ⚙️ button with this */}
                 <button
                   type="button"
                   onClick={() => b.strategy_id && (setEditingBotId(b.id), setShowSettings(true))}
-                  className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted whitespace-nowrap"
+                  className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted"
                   title="Strategy settings"
                   disabled={!b.strategy_id}
                 >
-                  <span aria-hidden="true">⚙️</span>
-                  <span>Settings</span>
+                  ⚙️
                 </button>
-
                 <button
                   type="button"
                   onClick={() => removeBot(b.id)}
-                  className="bot-card__remove rounded-lg border border-border px-3 py-2 text-sm text-rose-500 hover:bg-rose-500/10"
+                  className="rounded-lg border border-border px-3 py-2 text-sm text-rose-500 hover:bg-rose-500/10"
                   title="Remove bot"
                 >
                   Remove
