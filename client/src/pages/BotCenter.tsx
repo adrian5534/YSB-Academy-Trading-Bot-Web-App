@@ -637,27 +637,13 @@ export default function BotCenter() {
             </select>
           </div>
 
-          <div className="flex items-center gap-2">
-            <button
-              onClick={start}
-              disabled={!strategyId || (!isPro && (mode === "paper" || mode === "live"))}
-              className={`rounded-lg px-3 py-2 font-semibold ${
-                !strategyId || (!isPro && (mode === "paper" || mode === "live"))
-                  ? "border border-border bg-muted text-muted-foreground cursor-not-allowed"
-                  : "bg-ysbPurple text-ysbYellow hover:opacity-90"
-              }`}
-            >
-              {isRunRunning(runIdPrimary) ? "RESTART" : "START"}
-            </button>
-            <button
-              onClick={() => stopRun(runIdPrimary)}
-              className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground"
-            >
-              Stop
-            </button>
-            <div className="ml-auto flex items-center gap-2">
+          {/* Replace the existing actions block in the PRIMARY card with this */}
+          <div className="space-y-2">
+            {/* Trading mode (moved ABOVE start/stop) */}
+            <div>
+              <div className="text-sm text-muted-foreground">Trading mode</div>
               <select
-                className="rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
                 value={mode}
                 onChange={(e) => setMode(e.target.value as any)}
               >
@@ -669,15 +655,41 @@ export default function BotCenter() {
                   Live{!isPro ? " (Pro only)" : ""}
                 </option>
               </select>
+            </div>
+
+            {/* Start / Stop row */}
+            <div className="flex items-center gap-2">
               <button
-                type="button"
-                onClick={() => strategyId && setShowSettings(true)}
-                className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted"
-                title="Strategy settings"
-                disabled={!strategyId}
+                onClick={start}
+                disabled={!strategyId || (!isPro && (mode === "paper" || mode === "live"))}
+                className={`rounded-lg px-3 py-2 font-semibold ${
+                  !strategyId || (!isPro && (mode === "paper" || mode === "live"))
+                    ? "border border-border bg-muted text-muted-foreground cursor-not-allowed"
+                    : "bg-ysbPurple text-ysbYellow hover:opacity-90"
+                }`}
               >
-                ⚙️
+                {isRunRunning(runIdPrimary) ? "RESTART" : "START"}
               </button>
+
+              <button
+                onClick={() => stopRun(runIdPrimary)}
+                className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground"
+              >
+                Stop
+              </button>
+
+              <div className="ml-auto flex items-center gap-2">
+                {/* removed the old Trading mode select from here */}
+                <button
+                  type="button"
+                  onClick={() => strategyId && setShowSettings(true)}
+                  className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted"
+                  title="Strategy settings"
+                  disabled={!strategyId}
+                >
+                  ⚙️
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -786,27 +798,13 @@ export default function BotCenter() {
               </select>
             </div>
 
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => startSingle(b)}
-                disabled={!b.strategy_id || !b.account_id || (!isPro && (b.mode === "paper" || b.mode === "live"))}
-                className={`rounded-lg px-3 py-2 font-semibold ${
-                  !b.strategy_id || !b.account_id || (!isPro && (b.mode === "paper" || b.mode === "live"))
-                    ? "border border-border bg-muted text-muted-foreground cursor-not-allowed"
-                    : "bg-ysbPurple text-ysbYellow hover:opacity-90"
-                }`}
-              >
-                {isRunRunning(runIdOf(b)) ? "RESTART" : "START"}
-              </button>
-              <button
-                onClick={() => stopRun(runIdOf(b))}
-                className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground"
-              >
-                Stop
-              </button>
-              <div className="ml-auto flex items-center gap-2">
+            {/* Replace the existing actions block in EACH EXTRA bot card with this */}
+            <div className="space-y-2">
+              {/* Trading mode (moved ABOVE start/stop) */}
+              <div>
+                <div className="text-sm text-muted-foreground">Trading mode</div>
                 <select
-                  className="rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                  className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
                   value={b.mode}
                   onChange={(e) => updateBot(b.id, { mode: e.target.value as any })}
                 >
@@ -818,23 +816,50 @@ export default function BotCenter() {
                     Live{!isPro ? " (Pro only)" : ""}
                   </option>
                 </select>
+              </div>
+
+              {/* Start / Stop row */}
+              <div className="flex items-center gap-2">
                 <button
-                  type="button"
-                  onClick={() => b.strategy_id && (setEditingBotId(b.id), setShowSettings(true))}
-                  className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted"
-                  title="Strategy settings"
-                  disabled={!b.strategy_id}
+                  onClick={() => startSingle(b)}
+                  disabled={!b.strategy_id || !b.account_id || (!isPro && (b.mode === "paper" || b.mode === "live"))}
+                  className={`rounded-lg px-3 py-2 font-semibold ${
+                    !b.strategy_id || !b.account_id || (!isPro && (b.mode === "paper" || b.mode === "live"))
+                      ? "border border-border bg-muted text-muted-foreground cursor-not-allowed"
+                      : "bg-ysbPurple text-ysbYellow hover:opacity-90"
+                  }`}
                 >
-                  ⚙️
+                  {isRunRunning(runIdOf(b)) ? "RESTART" : "START"}
                 </button>
+
                 <button
-                  type="button"
-                  onClick={() => removeBot(b.id)}
-                  className="rounded-lg border border-border px-3 py-2 text-sm text-rose-500 hover:bg-rose-500/10"
-                  title="Remove bot"
+                  onClick={() => stopRun(runIdOf(b))}
+                  className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground"
                 >
-                  Remove
+                  Stop
                 </button>
+
+                <div className="ml-auto flex items-center gap-2">
+                  {/* removed the old Trading mode select from here */}
+                  <button
+                    type="button"
+                    onClick={() => b.strategy_id && (setEditingBotId(b.id), setShowSettings(true))}
+                    className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted"
+                    title="Strategy settings"
+                    disabled={!b.strategy_id}
+                  >
+                    ⚙️
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => removeBot(b.id)}
+                    className="rounded-lg border border-border px-3 py-2 text-sm text-rose-500 hover:bg-rose-500/10"
+                    title="Remove bot"
+                  >
+                    Remove
+                  </button>
+                </div>
               </div>
             </div>
           </div>
