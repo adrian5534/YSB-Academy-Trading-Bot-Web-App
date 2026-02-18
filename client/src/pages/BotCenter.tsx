@@ -639,7 +639,25 @@ export default function BotCenter() {
           </div>
 
           {/* Actions (Primary) */}
-          <div className="bot-card__actions flex flex-wrap items-center gap-2">
+          <div className="bot-card__actions flex flex-wrap items-end gap-2">
+            {/* ✅ Trading mode (label like "Strategy", placed BEFORE Start/Stop) */}
+            <div className="w-full sm:w-auto">
+              <div className="text-sm text-muted-foreground">Trading mode</div>
+              <select
+                className="mt-1 w-full sm:w-auto rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                value={mode}
+                onChange={(e) => setMode(e.target.value as any)}
+              >
+                <option value="backtest">Backtest</option>
+                <option value="paper" disabled={!isPro}>
+                  Paper{!isPro ? " (Pro only)" : ""}
+                </option>
+                <option value="live" disabled={!isPro}>
+                  Live{!isPro ? " (Pro only)" : ""}
+                </option>
+              </select>
+            </div>
+
             <button
               onClick={start}
               disabled={!strategyId || (!isPro && (mode === "paper" || mode === "live"))}
@@ -660,21 +678,8 @@ export default function BotCenter() {
             </button>
 
             <div className="bot-card__rightActions flex flex-wrap items-center gap-2 sm:ml-auto">
-              <select
-                className="rounded-lg border border-border bg-background px-3 py-2 text-sm"
-                value={mode}
-                onChange={(e) => setMode(e.target.value as any)}
-              >
-                <option value="backtest">Backtest</option>
-                <option value="paper" disabled={!isPro}>
-                  Paper{!isPro ? " (Pro only)" : ""}
-                </option>
-                <option value="live" disabled={!isPro}>
-                  Live{!isPro ? " (Pro only)" : ""}
-                </option>
-              </select>
+              {/* ❌ REMOVE the old mode <select> from here */}
 
-              {/* PRIMARY card: replace the ⚙️ button with this */}
               <button
                 type="button"
                 onClick={() => strategyId && setShowSettings(true)}
@@ -794,7 +799,25 @@ export default function BotCenter() {
             </div>
 
             {/* Actions (Extra bot card) */}
-            <div className="bot-card__actions flex flex-wrap items-center gap-2">
+            <div className="bot-card__actions flex flex-wrap items-end gap-2">
+              {/* ✅ Trading mode above Start/Stop */}
+              <div className="w-full sm:w-auto">
+                <div className="text-sm text-muted-foreground">Trading mode</div>
+                <select
+                  className="mt-1 w-full sm:w-auto rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                  value={b.mode}
+                  onChange={(e) => updateBot(b.id, { mode: e.target.value as any })}
+                >
+                  <option value="backtest">Backtest</option>
+                  <option value="paper" disabled={!isPro}>
+                    Paper{!isPro ? " (Pro only)" : ""}
+                  </option>
+                  <option value="live" disabled={!isPro}>
+                    Live{!isPro ? " (Pro only)" : ""}
+                  </option>
+                </select>
+              </div>
+
               <button
                 onClick={() => startSingle(b)}
                 disabled={!b.strategy_id || !b.account_id || (!isPro && (b.mode === "paper" || b.mode === "live"))}
@@ -815,21 +838,8 @@ export default function BotCenter() {
               </button>
 
               <div className="bot-card__rightActions flex flex-wrap items-center gap-2 sm:ml-auto">
-                <select
-                  className="rounded-lg border border-border bg-background px-3 py-2 text-sm"
-                  value={b.mode}
-                  onChange={(e) => updateBot(b.id, { mode: e.target.value as any })}
-                >
-                  <option value="backtest">Backtest</option>
-                  <option value="paper" disabled={!isPro}>
-                    Paper{!isPro ? " (Pro only)" : ""}
-                  </option>
-                  <option value="live" disabled={!isPro}>
-                    Live{!isPro ? " (Pro only)" : ""}
-                  </option>
-                </select>
+                {/* ❌ REMOVE the old mode <select> from here */}
 
-                {/* EXTRA bot card: replace the ⚙️ button with this */}
                 <button
                   type="button"
                   onClick={() => b.strategy_id && (setEditingBotId(b.id), setShowSettings(true))}
