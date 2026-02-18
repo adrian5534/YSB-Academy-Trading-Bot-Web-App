@@ -86,3 +86,55 @@
     height: 380px;
   }
 }
+
+/* ===== StatCard responsive tweaks ===== */
+.stat-card {
+  padding: 12px;                 /* smaller on phones */
+  min-height: 110px;             /* keeps cards visually consistent */
+}
+
+@media (min-width: 576px) {
+  .stat-card { padding: 14px; min-height: 118px; }
+}
+
+@media (min-width: 768px) {
+  .stat-card { padding: 16px; min-height: 126px; }
+}
+
+/* Title: avoid wrapping weirdly */
+.stat-card__title {
+  max-width: 80%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Value: fluid font size + no overflow */
+.stat-card__value {
+  font-size: clamp(1.15rem, 2.2vw, 1.6rem);
+  line-height: 1.15;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Meta: keep on one line if possible */
+.stat-card__meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+/* Make the icon a consistent size */
+.stat-card__icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+@media (min-width: 992px) {
+  .stat-card__icon svg {
+    width: 18px;
+    height: 18px;
+  }
+}
