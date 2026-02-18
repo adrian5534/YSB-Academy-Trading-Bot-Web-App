@@ -130,3 +130,43 @@
     height: 18px;
   }
 }
+
+/* =========================
+   <= 576px fixes
+   - StatCards: 2 columns
+   - Panels: prevent horizontal overflow/cutoff
+   ========================= */
+
+/* CRITICAL: allow grid children to shrink instead of overflowing to the right */
+.dashboard-panels > *,
+.dashboard-stats > * {
+  min-width: 0;
+}
+
+/* Ensure panels never exceed viewport width */
+.live-chart,
+.trade-history {
+  max-width: 100%;
+  overflow: hidden; /* keeps rounded corners; inner body still scrolls */
+}
+
+/* Chart area should not create horizontal overflow */
+.live-chart__plot {
+  overflow: hidden;
+}
+
+/* Phones: show stat cards in 2 columns */
+@media (max-width: 575.98px) {
+  .dashboard-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .stat-card {
+    padding: 10px;
+    min-height: 96px;
+  }
+
+  .stat-card__value {
+    font-size: 1.05rem; /* slightly smaller so values don't push width */
+  }
+}
