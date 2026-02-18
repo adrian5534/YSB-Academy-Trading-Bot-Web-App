@@ -219,7 +219,7 @@ export default function Dashboard() {
         </div>
       </motion.div>
 
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-6">
+      <div className="dashboard-stats grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
         <StatCard
           title="Total PnL"
           value={`${totalProfit.toFixed(2)}`}
