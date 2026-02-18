@@ -155,10 +155,10 @@
   overflow: hidden;
 }
 
-/* Phones: show stat cards in 2 columns */
+/* Phones: show stat cards in 2 columns (force override vs Tailwind grid-cols-1) */
 @media (max-width: 575.98px) {
   .dashboard-stats {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
   }
 
   .stat-card {
@@ -167,6 +167,6 @@
   }
 
   .stat-card__value {
-    font-size: 1.05rem; /* slightly smaller so values don't push width */
+    font-size: 1.05rem;
   }
 }
