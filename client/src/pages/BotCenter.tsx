@@ -691,7 +691,10 @@ export default function BotCenter() {
 
         {/* Extra bot cards (identical layout) */}
         {bots.map((b: any) => (
-          <div key={b.id} className="rounded-2xl border border-border bg-card p-4 space-y-4">
+          <div
+            key={b.id}
+            className="rounded-2xl border border-border bg-card p-4 flex flex-col gap-4 h-full"
+          >
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="rounded-xl border border-border bg-background p-3">
                 <div className="text-sm text-muted-foreground">Strategy</div>
@@ -793,8 +796,8 @@ export default function BotCenter() {
               </select>
             </div>
 
-            {/* EXTRA card action row - replace the whole <div className="flex items-center gap-2">...</div> */}
-            <div className="flex flex-wrap items-center gap-2">
+            {/* EXTRA card action row */}
+            <div className="mt-auto flex flex-wrap items-center gap-2">
               <button
                 onClick={() => startSingle(b)}
                 disabled={!b.strategy_id || !b.account_id || (!isPro && (b.mode === "paper" || b.mode === "live"))}
