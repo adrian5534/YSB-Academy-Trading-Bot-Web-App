@@ -674,14 +674,16 @@ export default function BotCenter() {
                 </option>
               </select>
 
+              {/* PRIMARY card: replace the ⚙️ button with this */}
               <button
                 type="button"
                 onClick={() => strategyId && setShowSettings(true)}
-                className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted"
+                className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted whitespace-nowrap"
                 title="Strategy settings"
                 disabled={!strategyId}
               >
-                ⚙️
+                <span aria-hidden="true">⚙️</span>
+                <span>Settings</span>
               </button>
             </div>
           </div>
@@ -827,14 +829,16 @@ export default function BotCenter() {
                   </option>
                 </select>
 
+                {/* EXTRA bot card: replace the ⚙️ button with this */}
                 <button
                   type="button"
                   onClick={() => b.strategy_id && (setEditingBotId(b.id), setShowSettings(true))}
-                  className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted"
+                  className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted whitespace-nowrap"
                   title="Strategy settings"
                   disabled={!b.strategy_id}
                 >
-                  ⚙️
+                  <span aria-hidden="true">⚙️</span>
+                  <span>Settings</span>
                 </button>
 
                 <button
