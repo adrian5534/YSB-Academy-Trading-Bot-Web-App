@@ -71,7 +71,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   // Optional: if viewport becomes desktop, force-close drawer
   useEffect(() => {
-    const mq = window.matchMedia("(min-width: 992px)");
+    const mq = window.matchMedia("(min-width: 1200px)");
     const onChange = () => {
       if (mq.matches) setDrawerOpen(false);
     };

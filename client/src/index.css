@@ -183,35 +183,35 @@ body.drawer-open {
   .app-shell__drawer { width: min(70vw, 420px); }
 }
 
-/* 992px: Large devices (desktops) */
+/* 992px: Large tablets / small laptops (KEEP burger/topbar) */
 @media (min-width: 992px) {
+  .app-shell__main { padding: 24px; }
+  .app-shell__drawer { width: min(52vw, 440px); }
+}
+
+/* 1200px: Desktop layout (sidebar, no burger) */
+@media (min-width: 1200px) {
   .app-shell {
     display: grid;
-    grid-template-columns: 260px 1fr;
+    grid-template-columns: 280px 1fr;
   }
 
-  .app-shell__topbar { display: none; }
+  .app-shell__topbar { display: none; } /* ✅ burger hidden on true desktop */
 
   .app-shell__aside {
-    display: block;
+    display: block;              /* ✅ sidebar appears on desktop */
     min-height: 100vh;
-    padding: 16px;
+    padding: 18px;
     border-right-width: 1px;
+    border-color: rgba(255, 255, 255, 0.10);
     background: inherit;
   }
 
-  /* drawer should never be visible on desktop even if mounted */
+  /* Drawer should never be visible on desktop */
   .app-shell__drawer,
   .app-shell__drawerOverlay {
     display: none;
   }
 
-  .app-shell__main { padding: 24px; }
-}
-
-/* 1200px: Extra-large devices (wide desktops) */
-@media (min-width: 1200px) {
-  .app-shell { grid-template-columns: 280px 1fr; }
-  .app-shell__aside { padding: 18px; }
   .app-shell__main { padding: 32px; }
 }
