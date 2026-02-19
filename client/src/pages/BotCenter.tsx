@@ -677,11 +677,11 @@ export default function BotCenter() {
           </div>
 
           {/* PRIMARY card action row (Start/Stop only) */}
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="grid grid-cols-2 gap-2">
             <button
               onClick={start}
               disabled={!strategyId || (!isPro && (mode === "paper" || mode === "live"))}
-              className={`rounded-lg px-3 py-2 font-semibold ${
+              className={`w-full rounded-lg px-3 py-2 font-semibold ${
                 !strategyId || (!isPro && (mode === "paper" || mode === "live"))
                   ? "border border-border bg-muted text-muted-foreground cursor-not-allowed"
                   : "bg-ysbPurple text-ysbYellow hover:opacity-90"
@@ -692,7 +692,8 @@ export default function BotCenter() {
 
             <button
               onClick={() => stopRun(runIdPrimary)}
-              className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground"
+              className="w-full rounded-lg border border-border px-3 py-2 font-semibold text-muted-foreground hover:text-foreground"
+              type="button"
             >
               Stop
             </button>
@@ -855,11 +856,11 @@ export default function BotCenter() {
             </div>
 
             {/* EXTRA card action row (Start/Stop only) */}
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="grid grid-cols-2 gap-2">
               <button
                 onClick={() => startSingle(b)}
                 disabled={!b.strategy_id || !b.account_id || (!isPro && (b.mode === "paper" || b.mode === "live"))}
-                className={`rounded-lg px-3 py-2 font-semibold ${
+                className={`w-full rounded-lg px-3 py-2 font-semibold ${
                   !b.strategy_id || !b.account_id || (!isPro && (b.mode === "paper" || b.mode === "live"))
                     ? "border border-border bg-muted text-muted-foreground cursor-not-allowed"
                     : "bg-ysbPurple text-ysbYellow hover:opacity-90"
@@ -870,7 +871,8 @@ export default function BotCenter() {
 
               <button
                 onClick={() => stopRun(runIdOf(b))}
-                className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground"
+                className="w-full rounded-lg border border-border px-3 py-2 font-semibold text-muted-foreground hover:text-foreground"
+                type="button"
               >
                 Stop
               </button>
