@@ -909,25 +909,41 @@ export default function BotCenter() {
             Clear
           </button>
         </div>
-        <div className="max-h-[28rem] overflow-auto rounded-lg border border-border bg-background p-2 font-mono text-xs text-muted-foreground">
-          {logs.slice(0, 400).map((l: any, i: number) => (
-            <div key={i} className="whitespace-pre-wrap">
-              <span className="text-muted-foreground">{new Date(l.ts).toLocaleTimeString()} </span>
-              {l.message}
-              {l.meta
-                ? ` ${
-                    (() => {
-                      try {
-                        return JSON.stringify(l.meta);
-                      } catch {
-                        return "";
-                      }
-                    })()
-                  }`
-                : ""}
+
+        {(() => {
+          const toMs = (t: any) => {
+            const n = typeof t === "number" ? t : Date.parse(String(t));
+            return Number.isFinite(n) ? n : 0;
+          };
+
+          const first = logs?.[0];
+          const last = logs?.[Math.max(0, (logs?.length ?? 0) - 1)];
+          const newestFirst = toMs(first?.ts) > toMs(last?.ts);
+
+          const visibleLogs = newestFirst ? (logs ?? []).slice(0, 400) : (logs ?? []).slice(-400);
+
+          return (
+            <div className="max-h-[28rem] overflow-auto rounded-lg border border-border bg-background p-2 font-mono text-xs text-muted-foreground">
+              {visibleLogs.map((l: any, i: number) => (
+                <div key={`${String(l?.ts ?? "")}-${String(l?.message ?? "")}-${i}`} className="whitespace-pre-wrap">
+                  <span className="text-muted-foreground">{new Date(l.ts).toLocaleTimeString()} </span>
+                  {l.message}
+                  {l.meta
+                    ? ` ${
+                        (() => {
+                          try {
+                            return JSON.stringify(l.meta);
+                          } catch {
+                            return "";
+                          }
+                        })()
+                      }`
+                    : ""}
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
+          );
+        })()}
       </div>
 
       {showSettings && (
