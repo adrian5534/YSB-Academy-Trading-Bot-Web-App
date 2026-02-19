@@ -26,3 +26,24 @@
 .bot-card__remove {
   white-space: nowrap;
 }
+
+/* BotCenter card grid sizing via media queries (instead of Tailwind breakpoints) */
+.bot-center__grid {
+  /* prevent “extra tall” stretched cards in the same row */
+  align-items: start;
+}
+
+/* ≥ 640px: 2 columns */
+@media (min-width: 640px) {
+  .bot-center__grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1.5rem; /* a bit more breathing room so cards don't feel squashed */
+  }
+}
+
+/* ≥ 768px: max 3 columns (and keep 3 for larger sizes too) */
+@media (min-width: 768px) {
+  .bot-center__grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
