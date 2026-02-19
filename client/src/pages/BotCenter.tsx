@@ -518,7 +518,7 @@ export default function BotCenter() {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 w-full max-w-full overflow-x-hidden">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="text-2xl font-semibold">Control Panel</div>
@@ -530,13 +530,13 @@ export default function BotCenter() {
           {status?.state === "running" ? "RUNNING" : "STOPPED"}
         </span>
       </div>
+
       <div className="text-sm text-muted-foreground">Manage strategy & execution</div>
 
       {/* Cards grid: responsive left-to-right */}
-      <div className="bot-center__grid grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 items-stretch">
-
+      <div className="bot-center__grid w-full min-w-0 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 items-stretch">
         {/* Primary card */}
-        <div className="rounded-2xl border border-border bg-card p-4 space-y-4 h-full flex flex-col">
+        <div className="rounded-2xl border border-border bg-card p-4 space-y-4 h-full flex flex-col min-w-0">
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="rounded-xl border border-border bg-background p-3">
               <div className="text-sm text-muted-foreground">Strategy</div>
@@ -703,7 +703,10 @@ export default function BotCenter() {
 
         {/* Extra bot cards (identical layout) */}
         {bots.map((b: any) => (
-          <div key={b.id} className="rounded-2xl border border-border bg-card p-4 space-y-4 h-full flex flex-col">
+          <div
+            key={b.id}
+            className="rounded-2xl border border-border bg-card p-4 space-y-4 h-full flex flex-col min-w-0"
+          >
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="rounded-xl border border-border bg-background p-3">
                 <div className="text-sm text-muted-foreground">Strategy</div>
@@ -881,11 +884,11 @@ export default function BotCenter() {
           </div>
         ))}
 
-        {/* Add Bot card (always visible, no hard limit) */}
+        {/* Add Bot card */}
         <button
           type="button"
           onClick={addBot}
-          className="rounded-2xl border border-dashed border-border bg-transparent p-4 flex items-center justify-center hover:bg-muted/30 transition-colors h-full"
+          className="rounded-2xl border border-dashed border-border bg-transparent p-4 flex items-center justify-center hover:bg-muted/30 transition-colors h-full min-w-0"
           title="Add bot"
         >
           <div className="flex flex-col items-center gap-2">
@@ -898,7 +901,7 @@ export default function BotCenter() {
       </div>
 
       {/* Live logs */}
-      <div className="rounded-2xl border border-border bg-card p-4">
+      <div className="rounded-2xl border border-border bg-card p-4 min-w-0">
         <div className="flex items-center justify-between mb-2">
           <div className="font-semibold">Live logs</div>
           <button
