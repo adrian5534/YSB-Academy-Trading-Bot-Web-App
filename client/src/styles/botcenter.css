@@ -37,3 +37,8 @@
   align-items: start;
 }
 
+/* Let Tailwind control columns/spacing; only keep equal-height behavior */
+.bot-center__grid {
+  align-items: stretch;
+}
+
