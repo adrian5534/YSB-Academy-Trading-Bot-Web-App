@@ -41,46 +41,110 @@ export function RuntimeEventsProvider({ children }: { children: React.ReactNode 
     let ws: WebSocket | null = null;
     let alive = true;
 
-    const start = () => {
-      ws = connectWs((evt: WsEvent) => {
+    let retry = 0;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const clearRetryTimer = () => {
+      if (retryTimer) {
+        clearTimeout(retryTimer);
+        retryTimer = null;
+      }
+    };
+
+    const scheduleReconnect = () => {
+      if (!alive) return;
+      clearRetryTimer();
+
+      // exponential backoff (1s, 2s, 4s, ... up to 30s) + small jitter
+      const base = Math.min(30_000, 1000 * Math.pow(2, retry));
+      const jitter = Math.floor(Math.random() * 250);
+      const delay = base + jitter;
+
+      retry = Math.min(retry + 1, 6); // cap growth
+      retryTimer = setTimeout(() => {
         if (!alive) return;
+        start();
+      }, delay);
+    };
 
-        if (evt.type === "bot.status") {
-          setBotStatus(evt.payload);
-          save("ysb.botStatus", evt.payload);
-        }
+    const onEvent = (evt: WsEvent) => {
+      if (!alive) return;
 
-        if (evt.type === "bot.log") {
-          const p: any = evt.payload ?? {};
-          const item = { message: String(p.message ?? "log"), ts: String(p.ts ?? new Date().toISOString()), meta: p.meta };
-          setLogs((prev) => {
-            const next = [item, ...prev].slice(0, MAX_LOGS);
-            save("ysb.logs", next);
-            return next;
-          });
-        }
+      if (evt.type === "bot.status") {
+        setBotStatus(evt.payload);
+        save("ysb.botStatus", evt.payload);
+      }
 
-        if (evt.type === "trade.event") {
-          setTrades((prev) => {
-            const next = [evt.payload, ...prev].slice(0, 200);
-            save("ysb.trades", next);
-            return next;
-          });
-        }
+      if (evt.type === "bot.log") {
+        const p: any = evt.payload ?? {};
+        const item = {
+          message: String(p.message ?? "log"),
+          ts: String(p.ts ?? new Date().toISOString()),
+          meta: p.meta,
+        };
+
+        setLogs((prev) => {
+          const next = [item, ...prev].slice(0, MAX_LOGS);
+          save("ysb.logs", next);
+          return next;
+        });
+      }
+
+      if (evt.type === "trade.event") {
+        setTrades((prev) => {
+          const next = [evt.payload, ...prev].slice(0, 200);
+          save("ysb.trades", next);
+          return next;
+        });
+      }
+    };
+
+    const start = () => {
+      // close any existing socket first
+      try {
+        ws?.close();
+      } catch {
+        // ignore
+      }
+
+      ws = connectWs(onEvent);
+
+      ws.addEventListener("open", () => {
+        if (!alive) return;
+        setConnected(true);
+        retry = 0;
+        clearRetryTimer();
       });
 
-      ws.addEventListener("open", () => setConnected(true));
-      ws.addEventListener("close", () => setConnected(false));
-      ws.addEventListener("error", () => setConnected(false));
+      ws.addEventListener("close", () => {
+        if (!alive) return;
+        setConnected(false);
+        scheduleReconnect();
+      });
+
+      ws.addEventListener("error", () => {
+        if (!alive) return;
+        setConnected(false);
+        // some browsers won’t fire "close" after "error" reliably
+        try {
+          ws?.close();
+        } catch {
+          // ignore
+        }
+        scheduleReconnect();
+      });
     };
 
     start();
 
     return () => {
       alive = false;
+      clearRetryTimer();
       try {
         ws?.close();
-      } catch {}
+      } catch {
+        // ignore
+      }
     };
   }, []);
 
