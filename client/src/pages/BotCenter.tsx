@@ -1145,17 +1145,83 @@ function StrategySettingsModal({
   onSave: (p: StrategyParams, nextRisk?: RiskRules) => void | Promise<void>;
   onClose: () => void;
 }) {
-  const [form, setForm] = reactUseState<StrategyParams>(params);
+  // ✅ allow "" while typing in number inputs (prevents the forced 0 issue)
+  const [form, setForm] = reactUseState<Record<string, any>>(params);
 
   // Modal-local risk UI state (global rule edited here)
   const [mdlEnabled, setMdlEnabled] = reactUseState<boolean>(Number(risk?.max_daily_loss ?? 0) > 0);
 
-  // ✅ keep a display value even when disabled (don’t force “0” into the input)
-  const [mdlValue, setMdlValue] = reactUseState<number>(() => {
+  // ✅ store as string so user can clear input without it snapping to 0
+  const [mdlValue, setMdlValue] = reactUseState<string>(() => {
     const current = Number(risk?.max_daily_loss ?? 0);
-    if (Number.isFinite(current) && current > 0) return Math.max(0, current);
-    return Math.max(0, Number(lastMaxDailyLoss ?? 50) || 50);
+    if (Number.isFinite(current) && current > 0) return String(Math.max(0, current));
+    return String(Math.max(0, Number(lastMaxDailyLoss ?? 50) || 50));
   });
+
+  const earlyEnabled = Boolean(form.early_sell_enabled ?? false);
+
+  const parseNum = (v: any): number | undefined => {
+    if (v === "" || v === null || v === undefined) return undefined;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : undefined;
+  };
+
+  const normalizeForSave = (): StrategyParams => {
+    const next: Record<string, any> = { ...(form ?? {}) };
+
+    // required execution fields
+    {
+      const stake = parseNum(next.stake);
+      next.stake = stake ?? Number(params.stake ?? 250);
+
+      const duration = parseNum(next.duration);
+      next.duration = Math.max(1, duration ?? Number(params.duration ?? 5));
+
+      // keep whatever unit is selected
+      next.duration_unit = (next.duration_unit ?? params.duration_unit ?? "m") as DurationUnit;
+
+      const mot = parseNum(next.max_open_trades);
+      next.max_open_trades = Math.max(1, mot ?? Number(params.max_open_trades ?? 5));
+    }
+
+    // early sell
+    next.early_sell_enabled = Boolean(next.early_sell_enabled);
+    {
+      const esp = parseNum(next.early_sell_profit);
+      // if blank, keep prior value instead of forcing 0
+      next.early_sell_profit = Math.max(0, esp ?? Number(params.early_sell_profit ?? 0));
+    }
+
+    // strategy-specific numeric fields: if blank, revert to default (or remove)
+    for (const f of fields ?? []) {
+      if (f.type !== "number") continue;
+
+      const raw = next[f.key];
+      const n = parseNum(raw);
+
+      if (raw === "") {
+        if (f.default !== undefined) next[f.key] = f.default;
+        else delete next[f.key];
+      } else if (n === undefined) {
+        if (f.default !== undefined) next[f.key] = f.default;
+      } else {
+        next[f.key] = n;
+      }
+    }
+
+    return next as StrategyParams;
+  };
+
+  const buildNextRisk = (): RiskRules | undefined => {
+    if (!risk) return undefined;
+
+    const n = parseNum(mdlValue);
+    const fallback = Math.max(0, Number(lastMaxDailyLoss ?? 50) || 50);
+    const nextVal = mdlEnabled ? Math.max(0, n ?? fallback) : 0;
+
+    if (mdlEnabled && nextVal > 0) setLastMaxDailyLoss(nextVal);
+    return { ...(risk ?? {}), max_daily_loss: nextVal };
+  };
 
   // keep modal in sync when opening for a different bot
   useEffect(() => {
@@ -1170,248 +1236,247 @@ function StrategySettingsModal({
 
     if (enabled) {
       const v = Math.max(0, current);
-      setMdlValue(v);
+      setMdlValue(String(v));
       if (v > 0) setLastMaxDailyLoss(v);
     } else {
-      // keep last known value visible in the input
-      setMdlValue((v) => (v > 0 ? v : Math.max(0, Number(lastMaxDailyLoss ?? 50) || 50)));
+      setMdlValue((v) => (String(v ?? "").trim() ? String(v) : String(Math.max(0, Number(lastMaxDailyLoss ?? 50) || 50))));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [risk]);
 
-  const buildNextRisk = (): RiskRules | undefined => {
-    if (!risk) return undefined;
-    const nextVal = mdlEnabled ? Math.max(0, Number(mdlValue) || 0) : 0;
-    if (nextVal > 0) setLastMaxDailyLoss(nextVal);
-    return { ...(risk ?? {}), max_daily_loss: nextVal };
-  };
-
-  const earlyEnabled = Boolean(form.early_sell_enabled ?? false);
-
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4">
-      <div className="w-full max-w-lg rounded-2xl border border-border bg-card p-5">
-        <div className="text-xl font-semibold mb-1">Strategy Configuration</div>
-        <div className="text-sm text-muted-foreground mb-4">Adjust the parameters.</div>
-
-        <div className="space-y-3">
-          <div>
-            <label className="block text-sm mb-1">Stake ($)</label>
-            <input
-              type="number"
-              className="w-full rounded-lg border border-border bg-background px-3 py-2"
-              value={form.stake}
-              onChange={(e) => setForm({ ...form, stake: Number(e.target.value) })}
-            />
+    // ✅ overlay scrolls on small screens
+    <div className="fixed inset-0 z-50 bg-black/60 p-4 overflow-y-auto">
+      <div className="mx-auto w-full max-w-lg">
+        {/* ✅ modal has a max height; inner content scrolls */}
+        <div className="rounded-2xl border border-border bg-card max-h-[calc(100vh-2rem)] flex flex-col overflow-hidden">
+          {/* Header */}
+          <div className="p-5">
+            <div className="text-xl font-semibold mb-1">Strategy Configuration</div>
+            <div className="text-sm text-muted-foreground">Adjust the parameters.</div>
           </div>
 
-          {!!fields.length && (
-            <div className="grid gap-3 md:grid-cols-2">
-              {fields.map((f) => (
-                <div key={f.key}>
-                  <label className="block text-sm mb-1">{f.label}</label>
-
-                  {f.type === "number" && (
-                    <input
-                      type="number"
-                      className="w-full rounded-lg border border-border bg-background px-3 py-2"
-                      min={f.min}
-                      max={f.max}
-                      step={f.step}
-                      value={Number(form[f.key] ?? f.default ?? 0)}
-                      onChange={(e) => setForm({ ...form, [f.key]: Number(e.target.value) })}
-                    />
-                  )}
-
-                  {f.type === "select" && (
-                    <select
-                      className="w-full rounded-lg border border-border bg-background px-3 py-2"
-                      value={String(form[f.key] ?? f.default ?? "")}
-                      onChange={(e) => setForm({ ...form, [f.key]: e.target.value })}
-                    >
-                      {(f.options ?? []).map((o) => (
-                        <option key={o} value={o}>
-                          {o}
-                        </option>
-                      ))}
-                    </select>
-                  )}
-
-                  {f.type === "boolean" && (
-                    <input
-                      type="checkbox"
-                      checked={Boolean(form[f.key] ?? f.default ?? false)}
-                      onChange={(e) => setForm({ ...form, [f.key]: e.target.checked })}
-                    />
-                  )}
-
-                  {f.type === "text" && (
-                    <input
-                      type="text"
-                      className="w-full rounded-lg border border-border bg-background px-3 py-2"
-                      value={String(form[f.key] ?? f.default ?? "")}
-                      onChange={(e) => setForm({ ...form, [f.key]: e.target.value })}
-                    />
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-
-          <div className="grid gap-3 md:grid-cols-2">
-            <div>
-              <label className="block text-sm mb-1">{form.duration_unit === "t" ? "Tick Count" : "Expiry Duration"}</label>
-              <input
-                type="number"
-                min={1}
-                className="w-full rounded-lg border border-border bg-background px-3 py-2"
-                value={form.duration}
-                onChange={(e) => setForm({ ...form, duration: Number(e.target.value) })}
-              />
-            </div>
-            <div>
-              <label className="block text-sm mb-1">Unit</label>
-              <select
-                className="w-full rounded-lg border border-border bg-background px-3 py-2"
-                value={form.duration_unit}
-                onChange={(e) => setForm({ ...form, duration_unit: e.target.value as DurationUnit })}
-              >
-                <option value="t">Ticks</option>
-                <option value="m">Minutes</option>
-                <option value="h">Hours</option>
-                <option value="d">Days</option>
-              </select>
-            </div>
-          </div>
-
-          <div>
-            <label className="block text-sm mb-1">Max open trades</label>
-            <input
-              type="number"
-              min={1}
-              className="w-full rounded-lg border border-border bg-background px-3 py-2"
-              value={Number(form.max_open_trades ?? 5)}
-              onChange={(e) => setForm({ ...form, max_open_trades: Math.max(1, Number(e.target.value)) })}
-            />
-          </div>
-
-          {/* ✅ Early sell (same pattern as Max daily loss: input + enable below) */}
-          <div>
-            <label className="block text-sm mb-1">Early sell profit (USD)</label>
-            <input
-              type="number"
-              min={0}
-              step={0.01}
-              disabled={!earlyEnabled}
-              className="w-full rounded-lg border border-border bg-background px-3 py-2 disabled:opacity-50"
-              value={Math.max(0, Number(form.early_sell_profit ?? 0) || 0)}
-              onChange={(e) =>
-                setForm((f) => ({
-                  ...f,
-                  early_sell_profit: Math.max(0, Number(e.target.value) || 0),
-                }))
-              }
-            />
-
-            <div className="mt-2 flex items-center gap-2">
-              <button
-                type="button"
-                aria-label={earlyEnabled ? "Disable early sell" : "Enable early sell"}
-                aria-pressed={earlyEnabled}
-                onClick={() => setForm((f) => ({ ...f, early_sell_enabled: !Boolean(f.early_sell_enabled) }))}
-                className={[
-                  "relative inline-flex h-6 w-11 items-center rounded-full border transition-colors",
-                  earlyEnabled ? "bg-emerald-500/20 border-emerald-500/40" : "bg-muted/40 border-border",
-                ].join(" ")}
-              >
-                <span
-                  className={[
-                    "inline-block h-5 w-5 transform rounded-full bg-white/90 shadow transition-transform",
-                    earlyEnabled ? "translate-x-5" : "translate-x-1",
-                  ].join(" ")}
+          {/* Body (scrollable) */}
+          <div className="px-5 pb-5 overflow-y-auto">
+            <div className="space-y-3">
+              <div>
+                <label className="block text-sm mb-1">Stake ($)</label>
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  className="w-full rounded-lg border border-border bg-background px-3 py-2"
+                  value={form.stake ?? ""}
+                  onChange={(e) => setForm({ ...form, stake: e.target.value })}
                 />
-              </button>
-              <label className="text-sm select-none">Enable early sell</label>
+              </div>
+
+              {!!fields.length && (
+                <div className="grid gap-3 md:grid-cols-2">
+                  {fields.map((f) => (
+                    <div key={f.key}>
+                      <label className="block text-sm mb-1">{f.label}</label>
+
+                      {f.type === "number" && (
+                        <input
+                          type="number"
+                          inputMode="decimal"
+                          className="w-full rounded-lg border border-border bg-background px-3 py-2"
+                          min={f.min}
+                          max={f.max}
+                          step={f.step}
+                          value={form[f.key] ?? ""}
+                          onChange={(e) => setForm({ ...form, [f.key]: e.target.value })}
+                        />
+                      )}
+
+                      {f.type === "select" && (
+                        <select
+                          className="w-full rounded-lg border border-border bg-background px-3 py-2"
+                          value={String(form[f.key] ?? f.default ?? "")}
+                          onChange={(e) => setForm({ ...form, [f.key]: e.target.value })}
+                        >
+                          {(f.options ?? []).map((o) => (
+                            <option key={o} value={o}>
+                              {o}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+
+                      {f.type === "boolean" && (
+                        <input
+                          type="checkbox"
+                          checked={Boolean(form[f.key] ?? f.default ?? false)}
+                          onChange={(e) => setForm({ ...form, [f.key]: e.target.checked })}
+                        />
+                      )}
+
+                      {f.type === "text" && (
+                        <input
+                          type="text"
+                          className="w-full rounded-lg border border-border bg-background px-3 py-2"
+                          value={String(form[f.key] ?? f.default ?? "")}
+                          onChange={(e) => setForm({ ...form, [f.key]: e.target.value })}
+                        />
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="grid gap-3 md:grid-cols-2">
+                <div>
+                  <label className="block text-sm mb-1">
+                    {form.duration_unit === "t" ? "Tick Count" : "Expiry Duration"}
+                  </label>
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    min={1}
+                    className="w-full rounded-lg border border-border bg-background px-3 py-2"
+                    value={form.duration ?? ""}
+                    onChange={(e) => setForm({ ...form, duration: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm mb-1">Unit</label>
+                  <select
+                    className="w-full rounded-lg border border-border bg-background px-3 py-2"
+                    value={form.duration_unit ?? "m"}
+                    onChange={(e) => setForm({ ...form, duration_unit: e.target.value as DurationUnit })}
+                  >
+                    <option value="t">Ticks</option>
+                    <option value="m">Minutes</option>
+                    <option value="h">Hours</option>
+                    <option value="d">Days</option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm mb-1">Max open trades</label>
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  min={1}
+                  className="w-full rounded-lg border border-border bg-background px-3 py-2"
+                  value={form.max_open_trades ?? ""}
+                  onChange={(e) => setForm({ ...form, max_open_trades: e.target.value })}
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm mb-1">Early sell profit (USD)</label>
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  min={0}
+                  step={0.01}
+                  disabled={!earlyEnabled}
+                  className="w-full rounded-lg border border-border bg-background px-3 py-2 disabled:opacity-50"
+                  value={form.early_sell_profit ?? ""}
+                  onChange={(e) => setForm({ ...form, early_sell_profit: e.target.value })}
+                />
+
+                <div className="mt-2 flex items-center gap-2">
+                  <button
+                    type="button"
+                    aria-label={earlyEnabled ? "Disable early sell" : "Enable early sell"}
+                    aria-pressed={earlyEnabled}
+                    onClick={() => setForm((f) => ({ ...f, early_sell_enabled: !Boolean(f.early_sell_enabled) }))}
+                    className={[
+                      "relative inline-flex h-6 w-11 items-center rounded-full border transition-colors",
+                      earlyEnabled ? "bg-emerald-500/20 border-emerald-500/40" : "bg-muted/40 border-border",
+                    ].join(" ")}
+                  >
+                    <span
+                      className={[
+                        "inline-block h-5 w-5 transform rounded-full bg-white/90 shadow transition-transform",
+                        earlyEnabled ? "translate-x-5" : "translate-x-1",
+                      ].join(" ")}
+                    />
+                  </button>
+                  <label className="text-sm select-none">Enable early sell</label>
+                </div>
+              </div>
+
+              {risk && (
+                <div>
+                  <div className="flex items-center justify-between">
+                    <label className="block text-sm mb-1">Max daily loss ($)</label>
+                    {savingRisk ? <div className="text-xs text-muted-foreground">Saving…</div> : null}
+                  </div>
+
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    min={0}
+                    step={1}
+                    disabled={!mdlEnabled}
+                    className="w-full rounded-lg border border-border bg-background px-3 py-2 disabled:opacity-50"
+                    value={mdlValue}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setMdlValue(v);
+                      const n = parseNum(v);
+                      if (n !== undefined && n > 0) setLastMaxDailyLoss(n);
+                    }}
+                  />
+
+                  <div className="mt-2 flex items-center gap-2">
+                    <button
+                      type="button"
+                      aria-label={mdlEnabled ? "Disable max daily loss" : "Enable max daily loss"}
+                      aria-pressed={mdlEnabled}
+                      onClick={() => {
+                        const enabled = !mdlEnabled;
+                        setMdlEnabled(enabled);
+
+                        if (enabled) {
+                          // if enabling with empty/invalid, restore last known sensible value
+                          const n = parseNum(mdlValue);
+                          if (n === undefined || n <= 0) {
+                            setMdlValue(String(Math.max(0, Number(lastMaxDailyLoss ?? 50) || 50)));
+                          }
+                        }
+                      }}
+                      className={[
+                        "relative inline-flex h-6 w-11 items-center rounded-full border transition-colors",
+                        mdlEnabled ? "bg-emerald-500/20 border-emerald-500/40" : "bg-muted/40 border-border",
+                      ].join(" ")}
+                    >
+                      <span
+                        className={[
+                          "inline-block h-5 w-5 transform rounded-full bg-white/90 shadow transition-transform",
+                          mdlEnabled ? "translate-x-5" : "translate-x-1",
+                        ].join(" ")}
+                      />
+                    </button>
+                    <label className="text-sm select-none">Enable max daily loss</label>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 
-          {/* ✅ Risk limits (max daily loss uses toggle switch too) */}
-          {risk && (
-            <div>
-              <div className="flex items-center justify-between">
-                <label className="block text-sm mb-1">Max daily loss ($)</label>
-                {savingRisk ? <div className="text-xs text-muted-foreground">Saving…</div> : null}
-              </div>
-
-              <input
-                type="number"
-                min={0}
-                step={1}
-                disabled={!mdlEnabled}
-                className="w-full rounded-lg border border-border bg-background px-3 py-2 disabled:opacity-50"
-                value={Math.max(0, Number(mdlValue) || 0)}
-                onChange={(e) => {
-                  const v = Math.max(0, Number(e.target.value) || 0);
-                  setMdlValue(v);
-                  if (v > 0) setLastMaxDailyLoss(v);
-                }}
-              />
-
-              <div className="mt-2 flex items-center gap-2">
-                <button
-                  type="button"
-                  aria-label={mdlEnabled ? "Disable max daily loss" : "Enable max daily loss"}
-                  aria-pressed={mdlEnabled}
-                  onClick={() => {
-                    const enabled = !mdlEnabled;
-                    setMdlEnabled(enabled);
-
-                    if (!enabled) {
-                      const current = Math.max(0, Number(mdlValue) || 0);
-                      if (current > 0) setLastMaxDailyLoss(current);
-                      // ✅ do not zero the input display; buildNextRisk() will send 0 when disabled
-                      return;
-                    }
-
-                    // enabling: if empty/invalid, restore a sensible value
-                    setMdlValue((v) =>
-                      Number.isFinite(v) && v > 0 ? v : Math.max(0, Number(lastMaxDailyLoss ?? 50) || 50),
-                    );
-                  }}
-                  className={[
-                    "relative inline-flex h-6 w-11 items-center rounded-full border transition-colors",
-                    mdlEnabled ? "bg-emerald-500/20 border-emerald-500/40" : "bg-muted/40 border-border",
-                  ].join(" ")}
-                >
-                  <span
-                    className={[
-                      "inline-block h-5 w-5 transform rounded-full bg-white/90 shadow transition-transform",
-                      mdlEnabled ? "translate-x-5" : "translate-x-1",
-                    ].join(" ")}
-                  />
-                </button>
-                <label className="text-sm select-none">Enable max daily loss</label>
-              </div>
-            </div>
-          )}
-        </div>
-
-        <div className="mt-5 flex items-center justify-end gap-2">
-          <button
-            className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground"
-            onClick={onClose}
-            type="button"
-          >
-            Cancel
-          </button>
-          <button
-            className="rounded-lg bg-ysbPurple px-3 py-2 font-semibold text-ysbYellow hover:opacity-90 disabled:opacity-50"
-            disabled={savingRisk}
-            onClick={() => onSave(form, buildNextRisk())}
-            type="button"
-          >
-            Save Changes
-          </button>
+          {/* Footer (always visible) */}
+          <div className="px-5 pb-5 pt-3 flex items-center justify-end gap-2">
+            <button
+              className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground"
+              onClick={onClose}
+              type="button"
+            >
+              Cancel
+            </button>
+            <button
+              className="rounded-lg bg-ysbPurple px-3 py-2 font-semibold text-ysbYellow hover:opacity-90 disabled:opacity-50"
+              disabled={savingRisk}
+              onClick={() => onSave(normalizeForSave(), buildNextRisk())}
+              type="button"
+            >
+              Save Changes
+            </button>
+          </div>
         </div>
       </div>
     </div>
