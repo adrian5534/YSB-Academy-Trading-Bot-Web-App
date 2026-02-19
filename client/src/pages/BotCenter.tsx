@@ -794,10 +794,12 @@ export default function BotCenter() {
             </div>
 
             {/* Controls ABOVE start/stop so users can set them before starting */}
-            <div className="flex w-full flex-wrap items-center justify-end gap-2">
-              <div className="min-w-0 w-full sm:w-auto">
+            <div className="w-full space-y-1">
+              <label className="block text-xs text-muted-foreground">Trading mode</label>
+
+              <div className="flex w-full flex-wrap items-center gap-2">
                 <select
-                  className="w-full sm:w-auto max-w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                  className="w-full max-w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
                   value={b.mode}
                   onChange={(e) => updateBot(b.id, { mode: e.target.value as any })}
                 >
@@ -809,26 +811,26 @@ export default function BotCenter() {
                     Live{!isPro ? " (Pro only)" : ""}
                   </option>
                 </select>
+
+                <button
+                  type="button"
+                  onClick={() => b.strategy_id && (setEditingBotId(b.id), setShowSettings(true))}
+                  className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted"
+                  title="Strategy settings"
+                  disabled={!b.strategy_id}
+                >
+                  ⚙️
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => removeBot(b.id)}
+                  className="rounded-lg border border-border px-3 py-2 text-sm text-rose-500 hover:bg-rose-500/10 whitespace-nowrap"
+                  title="Remove bot"
+                >
+                  Remove
+                </button>
               </div>
-
-              <button
-                type="button"
-                onClick={() => b.strategy_id && (setEditingBotId(b.id), setShowSettings(true))}
-                className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted"
-                title="Strategy settings"
-                disabled={!b.strategy_id}
-              >
-                ⚙️
-              </button>
-
-              <button
-                type="button"
-                onClick={() => removeBot(b.id)}
-                className="rounded-lg border border-border px-3 py-2 text-sm text-rose-500 hover:bg-rose-500/10 whitespace-nowrap"
-                title="Remove bot"
-              >
-                Remove
-              </button>
             </div>
 
             {/* EXTRA card action row (Start/Stop only) */}
