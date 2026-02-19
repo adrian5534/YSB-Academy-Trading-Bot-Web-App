@@ -637,7 +637,36 @@ export default function BotCenter() {
             </select>
           </div>
 
-          {/* PRIMARY card action row - replace the whole <div className="flex items-center gap-2">...</div> */}
+          {/* ✅ Controls ABOVE start/stop so users can set them before starting (PRIMARY) */}
+          <div className="flex w-full flex-wrap items-center justify-end gap-2">
+            <div className="min-w-0 w-full sm:w-auto">
+              <select
+                className="w-full sm:w-auto max-w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                value={mode}
+                onChange={(e) => setMode(e.target.value as any)}
+              >
+                <option value="backtest">Backtest</option>
+                <option value="paper" disabled={!isPro}>
+                  Paper{!isPro ? " (Pro only)" : ""}
+                </option>
+                <option value="live" disabled={!isPro}>
+                  Live{!isPro ? " (Pro only)" : ""}
+                </option>
+              </select>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => strategyId && setShowSettings(true)}
+              className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted"
+              title="Strategy settings"
+              disabled={!strategyId}
+            >
+              ⚙️
+            </button>
+          </div>
+
+          {/* PRIMARY card action row (Start/Stop only) */}
           <div className="flex flex-wrap items-center gap-2">
             <button
               onClick={start}
@@ -657,35 +686,6 @@ export default function BotCenter() {
             >
               Stop
             </button>
-
-            {/* Right-side controls: full width on small screens so nothing overflows */}
-            <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:ml-auto sm:w-auto">
-              <div className="min-w-0">
-                <select
-                  className="max-w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
-                  value={mode}
-                  onChange={(e) => setMode(e.target.value as any)}
-                >
-                  <option value="backtest">Backtest</option>
-                  <option value="paper" disabled={!isPro}>
-                    Paper{!isPro ? " (Pro only)" : ""}
-                  </option>
-                  <option value="live" disabled={!isPro}>
-                    Live{!isPro ? " (Pro only)" : ""}
-                  </option>
-                </select>
-              </div>
-
-              <button
-                type="button"
-                onClick={() => strategyId && setShowSettings(true)}
-                className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted"
-                title="Strategy settings"
-                disabled={!strategyId}
-              >
-                ⚙️
-              </button>
-            </div>
           </div>
         </div>
 
