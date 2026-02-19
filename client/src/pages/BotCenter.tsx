@@ -638,32 +638,40 @@ export default function BotCenter() {
           </div>
 
           {/* ✅ Controls ABOVE start/stop so users can set them before starting (PRIMARY) */}
-          <div className="w-full space-y-1">
-            <label className="block text-xs text-muted-foreground">Trading mode</label>
+          <div className="w-full space-y-3">
+            {/* Trading mode */}
+            <div className="w-full space-y-1">
+              <label className="block text-xs text-muted-foreground">Trading mode</label>
 
-            <div className="flex w-full flex-wrap items-center gap-2">
-              <select
-                className="w-full max-w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
-                value={mode}
-                onChange={(e) => setMode(e.target.value as any)}
-              >
-                <option value="backtest">Backtest</option>
-                <option value="paper" disabled={!isPro}>
-                  Paper{!isPro ? " (Pro only)" : ""}
-                </option>
-                <option value="live" disabled={!isPro}>
-                  Live{!isPro ? " (Pro only)" : ""}
-                </option>
-              </select>
+              <div className="flex w-full flex-wrap items-center gap-2">
+                <select
+                  className="w-full max-w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                  value={mode}
+                  onChange={(e) => setMode(e.target.value as any)}
+                >
+                  <option value="backtest">Backtest</option>
+                  <option value="paper" disabled={!isPro}>
+                    Paper{!isPro ? " (Pro only)" : ""}
+                  </option>
+                  <option value="live" disabled={!isPro}>
+                    Live{!isPro ? " (Pro only)" : ""}
+                  </option>
+                </select>
+              </div>
+            </div>
+
+            {/* Bot settings (block) */}
+            <div className="w-full space-y-1">
+              <label className="block text-xs text-muted-foreground">Bot settings</label>
 
               <button
                 type="button"
                 onClick={() => strategyId && setShowSettings(true)}
-                className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted"
-                title="Strategy settings"
+                className="w-full rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted disabled:opacity-50"
+                title="Bot settings"
                 disabled={!strategyId}
               >
-                ⚙️
+                ⚙️ Bot settings
               </button>
             </div>
           </div>
@@ -796,38 +804,49 @@ export default function BotCenter() {
             </div>
 
             {/* Controls ABOVE start/stop so users can set them before starting */}
-            <div className="w-full space-y-1">
-              <label className="block text-xs text-muted-foreground">Trading mode</label>
+            <div className="w-full space-y-3">
+              {/* Trading mode */}
+              <div className="w-full space-y-1">
+                <label className="block text-xs text-muted-foreground">Trading mode</label>
 
-              <div className="flex w-full flex-wrap items-center gap-2">
-                <select
-                  className="w-full max-w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
-                  value={b.mode}
-                  onChange={(e) => updateBot(b.id, { mode: e.target.value as any })}
-                >
-                  <option value="backtest">Backtest</option>
-                  <option value="paper" disabled={!isPro}>
-                    Paper{!isPro ? " (Pro only)" : ""}
-                  </option>
-                  <option value="live" disabled={!isPro}>
-                    Live{!isPro ? " (Pro only)" : ""}
-                  </option>
-                </select>
+                <div className="flex w-full flex-wrap items-center gap-2">
+                  <select
+                    className="w-full max-w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                    value={b.mode}
+                    onChange={(e) => updateBot(b.id, { mode: e.target.value as any })}
+                  >
+                    <option value="backtest">Backtest</option>
+                    <option value="paper" disabled={!isPro}>
+                      Paper{!isPro ? " (Pro only)" : ""}
+                    </option>
+                    <option value="live" disabled={!isPro}>
+                      Live{!isPro ? " (Pro only)" : ""}
+                    </option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Bot settings (block) */}
+              <div className="w-full space-y-1">
+                <label className="block text-xs text-muted-foreground">Bot settings</label>
 
                 <button
                   type="button"
                   onClick={() => b.strategy_id && (setEditingBotId(b.id), setShowSettings(true))}
-                  className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted"
-                  title="Strategy settings"
+                  className="w-full rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted disabled:opacity-50"
+                  title="Bot settings"
                   disabled={!b.strategy_id}
                 >
-                  ⚙️
+                  ⚙️ Bot settings
                 </button>
+              </div>
 
+              {/* Keep Remove as-is (still above Start/Stop) */}
+              <div className="w-full">
                 <button
                   type="button"
                   onClick={() => removeBot(b.id)}
-                  className="rounded-lg border border-border px-3 py-2 text-sm text-rose-500 hover:bg-rose-500/10 whitespace-nowrap"
+                  className="w-full rounded-lg border border-border px-3 py-2 text-sm text-rose-500 hover:bg-rose-500/10 whitespace-nowrap"
                   title="Remove bot"
                 >
                   Remove
