@@ -638,10 +638,12 @@ export default function BotCenter() {
           </div>
 
           {/* ✅ Controls ABOVE start/stop so users can set them before starting (PRIMARY) */}
-          <div className="flex w-full flex-wrap items-center justify-end gap-2">
-            <div className="min-w-0 w-full sm:w-auto">
+          <div className="w-full space-y-1">
+            <label className="block text-xs text-muted-foreground">Trading mode</label>
+
+            <div className="flex w-full flex-wrap items-center gap-2">
               <select
-                className="w-full sm:w-auto max-w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                className="w-full max-w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
                 value={mode}
                 onChange={(e) => setMode(e.target.value as any)}
               >
@@ -653,17 +655,17 @@ export default function BotCenter() {
                   Live{!isPro ? " (Pro only)" : ""}
                 </option>
               </select>
-            </div>
 
-            <button
-              type="button"
-              onClick={() => strategyId && setShowSettings(true)}
-              className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted"
-              title="Strategy settings"
-              disabled={!strategyId}
-            >
-              ⚙️
-            </button>
+              <button
+                type="button"
+                onClick={() => strategyId && setShowSettings(true)}
+                className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted"
+                title="Strategy settings"
+                disabled={!strategyId}
+              >
+                ⚙️
+              </button>
+            </div>
           </div>
 
           {/* PRIMARY card action row (Start/Stop only) */}
