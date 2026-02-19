@@ -533,7 +533,7 @@ export default function BotCenter() {
       <div className="text-sm text-muted-foreground">Manage strategy & execution</div>
 
       {/* Cards grid: responsive left-to-right */}
-      <div className="bot-center__grid">
+      <div className="bot-center__grid grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 items-start">
 
         {/* Primary card */}
         <div className="rounded-2xl border border-border bg-card p-4 space-y-4">

@@ -37,17 +37,3 @@
   align-items: start;
 }
 
-/* ≥ 640px: 2 columns */
-@media (min-width: 640px) {
-  .bot-center__grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
-    gap: 1.5rem !important;
-  }
-}
-
-/* ≥ 768px: 3 columns (max 3 even on larger screens) */
-@media (min-width: 768px) {
-  .bot-center__grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
-  }
-}
