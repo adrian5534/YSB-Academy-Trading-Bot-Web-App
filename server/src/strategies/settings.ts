@@ -264,14 +264,25 @@ export const STRATEGY_SETTINGS: Record<string, FieldDescriptor[]> = {
   // If you have other strategies (supplyDemandSweep, etc.) add descriptors here.
 };
 
-export function getEditableFields(strategyId: string): FieldDescriptor[] {
-  return STRATEGY_SETTINGS[strategyId] ?? [];
+const STRATEGY_ID_ALIASES: Record<string, string> = {
+  candlePattern: "candle_pattern",
+  oneHourTrend: "one_hour_trend",
+  trendConfirmation: "trend_confirmation",
+  scalpingHwr: "scalping_hwr",
+  trendPullback: "trend_pullback",
+  fvgRetracement: "fvg_retracement",
+  rangeMeanReversion: "range_mean_reversion",
+  volatilityBreak: "vol_break",
+};
+
+function normalizeStrategyId(id: string): string {
+  return STRATEGY_ID_ALIASES[id] ?? id;
 }
 
-/**
- * Helper to build defaults for a strategy.
- * Note: execution defaults are provided separately in EXECUTION_FIELDS.
- */
+export function getEditableFields(strategyId: string): FieldDescriptor[] {
+  return STRATEGY_SETTINGS[normalizeStrategyId(strategyId)] ?? [];
+}
+
 export function getDefaultParams(strategyId: string): Record<string, any> {
   const fields = getEditableFields(strategyId);
   const out: Record<string, any> = {};

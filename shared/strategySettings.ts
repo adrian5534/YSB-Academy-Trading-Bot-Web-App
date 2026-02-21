@@ -163,8 +163,37 @@ export const STRATEGY_SETTINGS: Record<string, FieldDescriptor[]> = {
   ],
 };
 
+const STRATEGY_ID_ALIASES: Record<string, string> = {
+  candlePattern: "candle_pattern",
+  oneHourTrend: "one_hour_trend",
+  trendConfirmation: "trend_confirmation",
+  scalpingHwr: "scalping_hwr",
+  trendPullback: "trend_pullback",
+  fvgRetracement: "fvg_retracement",
+  rangeMeanReversion: "range_mean_reversion",
+  volatilityBreak: "vol_break",
+
+  aroonTrend: "aroon_trend",
+  bollingerSnap: "bollinger_snap",
+  confluenceReversal: "confluence_reversal",
+  dpoCycleReversal: "dpo_cycle_reversal",
+  dualMomentum: "dual_momentum",
+  macdFlip: "macd_flip",
+  maPullback: "ma_pullback",
+  rocBurst: "roc_burst",
+  stochSnap: "stoch_snap",
+};
+
+export function normalizeStrategyId(id: string): string {
+  return STRATEGY_ID_ALIASES[id] ?? id;
+}
+
+export function getStrategyFields(strategyId: string): FieldDescriptor[] {
+  return STRATEGY_SETTINGS[normalizeStrategyId(strategyId)] ?? [];
+}
+
 export function getStrategyDefaults(strategyId: string): Record<string, any> {
-  const f = STRATEGY_SETTINGS[strategyId] ?? [];
+  const f = getStrategyFields(strategyId);
   const out: Record<string, any> = {};
   for (const d of f) out[d.key] = d.default;
   return out;
