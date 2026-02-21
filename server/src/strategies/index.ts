@@ -6,7 +6,18 @@ import { trendPullback } from "./trendPullback";
 import { supplyDemandSweep } from "./supplyDemandSweep";
 import { fvgRetracement } from "./fvgRetracement";
 import { rangeMeanReversion } from "./rangeMeanReversion";
+import { volatilityBreakout } from "./VolatilityBreakout";
+import { aroonTrendContinuation } from "./aroonTrendContinuation";
+import { bollingerSnapreversal } from "./bollingerSnapReversal";
+import { confluenceReversal } from "./confluenceReversal";
+import { dualMomentum } from "./dualMomentum";
+import { macdHistogramFlip } from "./macdHistogramFlip";
+import { maMicroPullback } from "./maMicroPullback";
+import { rocMomomentumBurst } from "./rocMomentumBurst";
+import { stochasticSnap } from "./StochasticSnap";
 import type { StrategyModule } from "./types";
+import { stochSnap } from "./StochasticSnap.js";
+import { stochastic } from "../indicators/advanced.js";
 
 export const strategies: StrategyModule[] = [
   candlePattern,
@@ -17,6 +28,15 @@ export const strategies: StrategyModule[] = [
   supplyDemandSweep,
   fvgRetracement,
   rangeMeanReversion,
+  volatilityBreakout,
+  aroonTrendContinuation,
+  bollingerSnapreversal,
+  confluenceReversal,
+  dualMomentum,
+  macdHistogramFlip,
+  maMicroPullback,
+  rocMomomentumBurst,
+  stochasticSnap,
 ];
 
 export function getStrategy(id: string) {
