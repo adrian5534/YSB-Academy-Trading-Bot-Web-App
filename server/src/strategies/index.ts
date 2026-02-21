@@ -1,3 +1,5 @@
+import type { StrategyModule } from "./types";
+
 import { candlePattern } from "./candlePattern";
 import { oneHourTrend } from "./oneHourTrend";
 import { trendConfirmation } from "./trendConfirmation";
@@ -6,18 +8,15 @@ import { trendPullback } from "./trendPullback";
 import { supplyDemandSweep } from "./supplyDemandSweep";
 import { fvgRetracement } from "./fvgRetracement";
 import { rangeMeanReversion } from "./rangeMeanReversion";
-import { volatilityBreakout } from "./VolatilityBreakout";
-import { aroonTrendContinuation } from "./aroonTrendContinuation";
-import { bollingerSnapreversal } from "./bollingerSnapReversal";
-import { confluenceReversal } from "./confluenceReversal";
-import { dualMomentum } from "./dualMomentum";
-import { macdHistogramFlip } from "./macdHistogramFlip";
-import { maMicroPullback } from "./maMicroPullback";
-import { rocMomomentumBurst } from "./rocMomentumBurst";
-import { stochasticSnap } from "./StochasticSnap";
-import type { StrategyModule } from "./types";
-import { stochSnap } from "./StochasticSnap.js";
-import { stochastic } from "../indicators/advanced.js";
+import { volatilityBreak } from "./VolatilityBreakout";
+import { aroonTrend } from "./AroonTrendContinuation";
+import { bollingerSnap } from "./BollingerSnapReversal";
+import { confluenceReversal } from "./ConfluenceReversal";
+import { dualMomentum } from "./DualMomentum";
+import { macdFlip } from "./MACDHistogramFlip";
+import { maPullback } from "./MAMicroPullback";
+import { rocBurst } from "./ROCMomentumBurst";
+import { stochSnap } from "./StochasticSnap";
 
 export const strategies: StrategyModule[] = [
   candlePattern,
@@ -28,15 +27,15 @@ export const strategies: StrategyModule[] = [
   supplyDemandSweep,
   fvgRetracement,
   rangeMeanReversion,
-  volatilityBreakout,
-  aroonTrendContinuation,
-  bollingerSnapreversal,
+  volatilityBreak,
+  aroonTrend,
+  bollingerSnap,
   confluenceReversal,
   dualMomentum,
-  macdHistogramFlip,
-  maMicroPullback,
-  rocMomomentumBurst,
-  stochasticSnap,
+  macdFlip,
+  maPullback,
+  rocBurst,
+  stochSnap,
 ];
 
 export function getStrategy(id: string) {

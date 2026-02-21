@@ -95,6 +95,47 @@ export default function BotCenter() {
   const { logs, clearLogs } = useRuntimeEvents();
 
   const availableAccounts = useMemo(() => accounts ?? [], [accounts]);
+
+  // ✅ central strategy list (includes new strategies automatically)
+  const strategyOptions = useMemo(() => {
+    const preferred: string[] = [
+      "candle_pattern",
+      "one_hour_trend",
+      "trend_confirmation",
+      "scalping_hwr",
+      "trend_pullback",
+      "supply_demand_sweep",
+      "fvg_retracement",
+      "range_mean_reversion",
+
+      // new strategies
+      "aroon_trend",
+      "bollinger_snap",
+      "confluence_reversal",
+      "dpo_cycle_reversal",
+      "dual_momentum",
+      "macd_flip",
+      "ma_pullback",
+      "roc_burst",
+      "stoch_snap",
+      "vol_break",
+    ];
+
+    const all = Object.keys(STRATEGY_SETTINGS ?? {});
+    const seen = new Set<string>();
+
+    const ordered: string[] = [];
+    for (const id of preferred) {
+      if (all.includes(id)) {
+        ordered.push(id);
+        seen.add(id);
+      }
+    }
+
+    const rest = all.filter((id) => !seen.has(id)).sort((a, b) => a.localeCompare(b));
+    return ordered.concat(rest);
+  }, []);
+
   const [accountId, setAccountId] = usePersistedState<string>("bot:accountId", "");
   const [symbol, setSymbol] = usePersistedState<string>("bot:symbol", "R_100");
   const [timeframe, setTimeframe] = usePersistedState<string>("bot:timeframe", "1m");
@@ -534,7 +575,6 @@ export default function BotCenter() {
 
       {/* Cards grid: responsive left-to-right */}
       <div className="bot-center__grid grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 items-stretch">
-
         {/* Primary card */}
         <div className="rounded-2xl border border-border bg-card p-4 space-y-4 h-full flex flex-col">
           <div className="grid gap-3 sm:grid-cols-2">
@@ -621,16 +661,7 @@ export default function BotCenter() {
               onChange={(e) => setStrategyId(e.target.value)}
             >
               <option value="">Select a strategy…</option>
-              {[
-                "candle_pattern",
-                "one_hour_trend",
-                "trend_confirmation",
-                "scalping_hwr",
-                "trend_pullback",
-                "supply_demand_sweep",
-                "fvg_retracement",
-                "range_mean_reversion",
-              ].map((s) => (
+              {strategyOptions.map((s) => (
                 <option key={s} value={s}>
                   {s}
                 </option>
@@ -788,16 +819,7 @@ export default function BotCenter() {
                 onChange={(e) => updateBot(b.id, { strategy_id: e.target.value })}
               >
                 <option value="">Select a strategy…</option>
-                {[
-                  "candle_pattern",
-                  "one_hour_trend",
-                  "trend_confirmation",
-                  "scalping_hwr",
-                  "trend_pullback",
-                  "supply_demand_sweep",
-                  "fvg_retracement",
-                  "range_mean_reversion",
-                ].map((s) => (
+                {strategyOptions.map((s) => (
                   <option key={s} value={s}>
                     {s}
                   </option>
