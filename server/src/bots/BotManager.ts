@@ -156,6 +156,10 @@ export class BotManager {
     const key = this.runKey(userId, runId);
     const existing = this.runs.get(key);
     if (existing?.timer) clearInterval(existing.timer);
+    if (existing) {
+      this.clearRunReconcileTimers(existing);
+      this.clearRunEphemeralState(userId, runId);
+    }
 
     const bot: Running = {
       userId,
@@ -186,8 +190,9 @@ export class BotManager {
     const key = this.runKey(userId, name);
     const bot = this.runs.get(key);
     if (bot?.timer) clearInterval(bot.timer);
+    if (bot) this.clearRunReconcileTimers(bot);
     this.runs.delete(key);
-    this.clearRunOpenCounts(userId, name);
+    this.clearRunEphemeralState(userId, name);
     this.hub.log("bot stopped", { userId, runId: name });
     this.hub.status(this.getStatus(userId));
   }
@@ -210,8 +215,9 @@ export class BotManager {
     }
 
     if (bot?.timer) clearInterval(bot.timer);
+    if (bot) this.clearRunReconcileTimers(bot);
     this.runs.delete(key);
-    this.clearRunOpenCounts(userId, runId);
+    this.clearRunEphemeralState(userId, runId);
     this.hub.log("bot stopped", { userId, runId });
     this.hub.status(this.getStatus(userId));
   }
@@ -856,7 +862,7 @@ export class BotManager {
     this.hub.log("paper trade", { symbol: cfg.symbol, side: signal.side, profit });
   }
 
-  // Replace running configs for a user (preserves config ids) and apply immediately
+  // Replace running configs for a user and apply immediately
   public async updateConfigs(userId: string, configs: Omit<BotConfig, "id">[]) {
     let updated = 0;
     for (const [, bot] of this.runs) {

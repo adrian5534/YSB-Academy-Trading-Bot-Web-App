@@ -70,6 +70,13 @@ type RiskRules = {
   adaptive_lookback?: number;
 };
 
+type StrategyMeta = {
+  id: string;
+  name: string;
+  description: string;
+  default_params?: Record<string, any>;
+};
+
 function instrumentMarket(i: any): string {
   return String(i?.market_display_name ?? i?.market ?? "Other");
 }
@@ -96,7 +103,33 @@ export default function BotCenter() {
 
   const availableAccounts = useMemo(() => accounts ?? [], [accounts]);
 
-  // ✅ central strategy list (includes new strategies automatically)
+  const [strategyCatalog, setStrategyCatalog] = reactUseState<StrategyMeta[]>([]);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const r = await apiFetch(api.strategies.list.path);
+        const list = (await r.json()) as StrategyMeta[];
+        if (alive) setStrategyCatalog(Array.isArray(list) ? list : []);
+      } catch {
+        if (alive) setStrategyCatalog([]);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const getDefaultsForStrategy = (id: string): Record<string, any> => {
+    const local = getStrategyDefaults(id) ?? {};
+    if (Object.keys(local).length) return local;
+
+    const remote = strategyCatalog.find((s) => s.id === id)?.default_params ?? {};
+    return remote;
+  };
+
+  // ✅ central strategy list (server + local fallback)
   const strategyOptions = useMemo(() => {
     const preferred: string[] = [
       "candle_pattern",
@@ -107,8 +140,6 @@ export default function BotCenter() {
       "supply_demand_sweep",
       "fvg_retracement",
       "range_mean_reversion",
-
-      // new strategies
       "aroon_trend",
       "bollinger_snap",
       "confluence_reversal",
@@ -121,7 +152,9 @@ export default function BotCenter() {
       "vol_break",
     ];
 
-    const all = Object.keys(STRATEGY_SETTINGS ?? {});
+    const serverIds = strategyCatalog.map((s) => s.id);
+    const localIds = Object.keys(STRATEGY_SETTINGS ?? {});
+    const all = Array.from(new Set([...serverIds, ...localIds]));
     const seen = new Set<string>();
 
     const ordered: string[] = [];
@@ -134,7 +167,7 @@ export default function BotCenter() {
 
     const rest = all.filter((id) => !seen.has(id)).sort((a, b) => a.localeCompare(b));
     return ordered.concat(rest);
-  }, []);
+  }, [strategyCatalog]);
 
   const [accountId, setAccountId] = usePersistedState<string>("bot:accountId", "");
   const [symbol, setSymbol] = usePersistedState<string>("bot:symbol", "R_100");
@@ -327,7 +360,7 @@ export default function BotCenter() {
 
         // merge defaults when strategy changes (preserve execution fields)
         if (patch.strategy_id && patch.strategy_id !== b.strategy_id) {
-          const defaults = getStrategyDefaults(patch.strategy_id);
+          const defaults = getDefaultsForStrategy(patch.strategy_id);
           const execKeys = new Set([
             "stake",
             "duration",
@@ -508,7 +541,7 @@ export default function BotCenter() {
 
       if (!strategyId) return exec;
 
-      const defaults = getStrategyDefaults(strategyId);
+      const defaults = getDefaultsForStrategy(strategyId);
       const allowedKeys = new Set(
         Object.keys(defaults)
           .concat(EXECUTION_FIELDS.map((f) => f.key))
@@ -520,7 +553,7 @@ export default function BotCenter() {
 
       return { ...defaults, ...exec, ...next } as StrategyParams;
     });
-  }, [strategyId, timeframe, setParams]);
+  }, [strategyId, timeframe, setParams, strategyCatalog]);
 
   // load saved settings for primary combo
   useEffect(() => {
