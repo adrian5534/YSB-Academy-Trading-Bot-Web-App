@@ -14,6 +14,18 @@ const STRATEGY_IDS = [
   "supply_demand_sweep",
   "fvg_retracement",
   "range_mean_reversion",
+
+  // ✅ new strategies
+  "aroon_trend",
+  "bollinger_snap",
+  "confluence_reversal",
+  "dpo_cycle_reversal",
+  "dual_momentum",
+  "macd_flip",
+  "ma_pullback",
+  "roc_burst",
+  "stoch_snap",
+  "vol_break",
 ] as const;
 
 // Shared primitives
