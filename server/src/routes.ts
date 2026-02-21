@@ -667,14 +667,14 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
     asyncRoute(async (req, res) => {
       const r = req as AuthedRequest;
 
-      // IMPORTANT: do not throw Zod errors -> return 400 instead of 500
+      // 1) Validate safely (400 instead of throw/500)
       const parsed = api.strategies.setSettings.input.safeParse(req.body);
       if (!parsed.success) {
         return res.status(400).json({ error: "Invalid request", details: parsed.error.issues });
       }
       const body = parsed.data;
 
-      // Optional but recommended: block unknown strategies early
+      // 2) Reject unknown strategies early
       if (!strategies.some((s) => s.id === body.strategy_id)) {
         return res.status(400).json({
           error: "Invalid request",
@@ -682,31 +682,72 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
         });
       }
 
-      const { error } = await supabaseAdmin.from("strategy_settings").upsert(
-        {
-          user_id: r.user.id,
-          account_id: body.account_id,
-          symbol: body.symbol,
-          timeframe: body.timeframe,
-          strategy_id: body.strategy_id,
-          params: body.params,
-          enabled: body.enabled ?? true,
-        },
-        // IMPORTANT: include user_id so ON CONFLICT matches your intended unique key
-        { onConflict: "user_id,account_id,symbol,timeframe,strategy_id" },
-      );
+      // 3) Ensure account belongs to current user
+      const { data: account, error: accountErr } = await supabaseAdmin
+        .from("accounts")
+        .select("id")
+        .eq("id", body.account_id)
+        .eq("user_id", r.user.id)
+        .maybeSingle();
 
-      if (error) {
-        console.error("strategy_settings upsert failed:", {
-          code: (error as any).code,
-          message: error.message,
-          details: (error as any).details,
-          hint: (error as any).hint,
+      if (accountErr) {
+        console.error("strategy_settings account lookup failed:", {
+          code: (accountErr as any)?.code,
+          message: accountErr.message,
+          details: (accountErr as any)?.details,
+          hint: (accountErr as any)?.hint,
         });
         return res.status(500).json({ error: "Internal Server Error" });
       }
 
-      res.json({ ok: true });
+      if (!account) {
+        return res.status(400).json({
+          error: "Invalid request",
+          details: [{ path: ["account_id"], message: "Account not found for current user" }],
+        });
+      }
+
+      const row = {
+        user_id: r.user.id,
+        account_id: body.account_id,
+        symbol: body.symbol,
+        timeframe: body.timeframe,
+        strategy_id: body.strategy_id,
+        params: body.params,
+        enabled: body.enabled ?? true,
+      };
+
+      const tryUpsert = async (onConflict: string) => {
+        const { error } = await supabaseAdmin.from("strategy_settings").upsert(row, { onConflict });
+        return error;
+      };
+
+      // 4) Try newer schema unique key
+      let dbError = await tryUpsert("user_id,account_id,symbol,timeframe,strategy_id");
+
+      // 5) Fallback for older schema (without user_id)
+      if (dbError && String((dbError as any)?.code) === "42P10") {
+        dbError = await tryUpsert("account_id,symbol,timeframe,strategy_id");
+      }
+
+      if (dbError) {
+        console.error("strategy_settings upsert failed:", {
+          code: (dbError as any)?.code,
+          message: dbError.message,
+          details: (dbError as any)?.details,
+          hint: (dbError as any)?.hint,
+          payload: {
+            user_id: r.user.id,
+            account_id: body.account_id,
+            symbol: body.symbol,
+            timeframe: body.timeframe,
+            strategy_id: body.strategy_id,
+          },
+        });
+        return res.status(500).json({ error: "Internal Server Error" });
+      }
+
+      return res.json({ ok: true });
     }),
   );
 
