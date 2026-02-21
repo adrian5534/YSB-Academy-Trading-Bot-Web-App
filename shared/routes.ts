@@ -256,10 +256,10 @@ export const api = {
     setSettings: {
       path: "/api/strategies/set-settings",
       input: z.object({
-        account_id: z.string(),
+        account_id: zUuid,
         symbol: z.string(),
-        timeframe: z.string(),
-        strategy_id: z.string(),
+        timeframe: zTimeframe,
+        strategy_id: zStrategyMeta.shape.id,
         params: z.record(z.any()),
         enabled: z.boolean().optional(),
       }),

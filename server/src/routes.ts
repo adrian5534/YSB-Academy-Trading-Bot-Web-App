@@ -666,7 +666,21 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
     requireUser,
     asyncRoute(async (req, res) => {
       const r = req as AuthedRequest;
-      const body = api.strategies.setSettings.input.parse(req.body);
+
+      // IMPORTANT: do not throw Zod errors -> return 400 instead of 500
+      const parsed = api.strategies.setSettings.input.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: "Invalid request", details: parsed.error.issues });
+      }
+      const body = parsed.data;
+
+      // Optional but recommended: block unknown strategies early
+      if (!strategies.some((s) => s.id === body.strategy_id)) {
+        return res.status(400).json({
+          error: "Invalid request",
+          details: [{ path: ["strategy_id"], message: `Unknown strategy_id: ${body.strategy_id}` }],
+        });
+      }
 
       const { error } = await supabaseAdmin.from("strategy_settings").upsert(
         {
@@ -676,11 +690,21 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
           timeframe: body.timeframe,
           strategy_id: body.strategy_id,
           params: body.params,
-          enabled: body.enabled,
+          enabled: body.enabled ?? true,
         },
-        { onConflict: "account_id,symbol,timeframe,strategy_id" },
+        // IMPORTANT: include user_id so ON CONFLICT matches your intended unique key
+        { onConflict: "user_id,account_id,symbol,timeframe,strategy_id" },
       );
-      if (error) throw error;
+
+      if (error) {
+        console.error("strategy_settings upsert failed:", {
+          code: (error as any).code,
+          message: error.message,
+          details: (error as any).details,
+          hint: (error as any).hint,
+        });
+        return res.status(500).json({ error: "Internal Server Error" });
+      }
 
       res.json({ ok: true });
     }),
@@ -1022,6 +1046,17 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
       res.json({ users: users.data, subscriptions: subs.data, logs: logs.data });
     }),
   );
+
+  // Router-level error handler:
+  // - Converts Zod errors into 400 responses (instead of 500)
+  // - Keeps everything else generic 500 (but logs it)
+  router.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    if (err instanceof z.ZodError) {
+      return res.status(400).json({ error: "Invalid request", details: err.issues });
+    }
+    console.error("Unhandled route error:", err);
+    return res.status(500).json({ error: "Internal Server Error" });
+  });
 
   app.use(router);
   return { botManager };
