@@ -153,8 +153,9 @@ export default function BotCenter() {
     ];
 
     const serverIds = strategyCatalog.map((s) => s.id);
-    const localIds = Object.keys(STRATEGY_SETTINGS ?? {});
-    const all = Array.from(new Set([...serverIds, ...localIds]));
+
+    // ✅ use server as source of truth to avoid selecting unsupported local-only ids
+    const all = Array.from(new Set(serverIds));
     const seen = new Set<string>();
 
     const ordered: string[] = [];
