@@ -83,6 +83,33 @@ export class BotManager {
     }
   }
 
+  private clearRunReconcileTimers(bot: Running) {
+    const accountIds = Array.from(new Set(bot.configs.map((c) => c.account_id)));
+    for (const accountId of accountIds) {
+      const ak = this.accountKey(bot.userId, accountId);
+      const t = this.reconcileTimers.get(ak);
+      if (t) clearTimeout(t);
+      this.reconcileTimers.delete(ak);
+      this.reconcileInFlight.delete(ak);
+    }
+  }
+
+  private clearRunEphemeralState(userId: string, runId: string) {
+    // open trade counters are keyed by run
+    this.clearRunOpenCounts(userId, runId);
+
+    // clean tradeId -> cfgKey mappings (cfgKey includes runId)
+    const cfgPrefix = `${userId}::${runId}::`;
+    for (const [tradeId, cfgKey] of Array.from(this.tradeToCfgKey.entries())) {
+      if (cfgKey.startsWith(cfgPrefix)) this.tradeToCfgKey.delete(tradeId);
+    }
+
+    // clean release latches for this run
+    for (const rk of Array.from(this.releasedTradeKeys.values())) {
+      if (rk.startsWith(cfgPrefix)) this.releasedTradeKeys.delete(rk);
+    }
+  }
+
   private accountKey(userId: string, accountId: string) {
     return `${userId}::${accountId}`;
   }
