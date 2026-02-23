@@ -195,7 +195,11 @@ export class BotManager {
       state: "running",
       started_at: new Date().toISOString(),
       heartbeat_at: new Date().toISOString(),
-      configs: configs.map((c) => ({ ...c, id: uuidv4() })),
+      configs: configs.map((c) => ({
+        ...c,
+        id: uuidv4(),
+        enabled: c.enabled ?? true, // default on
+      })),
     };
     this.runs.set(key, bot);
 
