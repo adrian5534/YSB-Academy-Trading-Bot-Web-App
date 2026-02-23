@@ -780,7 +780,7 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
           strategy_id: c.strategy_id,
           mode: c.mode,
           params: c.params,
-          enabled: c.enabled,
+          enabled: c.enabled ?? true, // ✅ default ON so configs actually trade
         })),
       );
       res.json({ ok: true });
@@ -1015,7 +1015,9 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
           metadata: { user_id: r.user.id },
         });
         customerId = customer.id;
-        await supabaseAdmin.from("subscriptions").upsert({ user_id: r.user.id, stripe_customer_id: customerId }, { onConflict: "user_id" });
+        await supabaseAdmin
+          .from("subscriptions")
+          .upsert({ user_id: r.user.id, stripe_customer_id: customerId }, { onConflict: "user_id" });
       }
 
       const plan = (req.body?.plan as "1m" | "2m" | "3m" | undefined) ?? "1m";
@@ -1080,7 +1082,11 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
       const role = await getRole(r.user.id);
       if (role !== "admin") return res.status(403).json({ error: "forbidden" });
 
-      const users = await supabaseAdmin.from("profiles").select("id,email,role,created_at").order("created_at", { ascending: false }).limit(50);
+      const users = await supabaseAdmin
+        .from("profiles")
+        .select("id,email,role,created_at")
+        .order("created_at", { ascending: false })
+        .limit(50);
       const subs = await supabaseAdmin.from("subscriptions").select("*").order("updated_at", { ascending: false }).limit(50);
       const logs = await supabaseAdmin.from("logs").select("*").order("created_at", { ascending: false }).limit(50);
 
