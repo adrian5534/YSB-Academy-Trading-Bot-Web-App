@@ -38,8 +38,11 @@ export function RuntimeEventsProvider({ children }: { children: React.ReactNode 
   const [logs, setLogs] = React.useState<Array<{ message: string; ts: string; meta?: any }>>(load("ysb.logs", []));
   const [trades, setTrades] = React.useState<any[]>(load("ysb.trades", []));
 
+  // ✅ Track the current socket + cancel superseded connects
+  const wsRef = React.useRef<WebSocket | null>(null);
+  const startSeqRef = React.useRef(0);
+
   React.useEffect(() => {
-    let ws: WebSocket | null = null;
     let alive = true;
 
     let retry = 0;
@@ -100,9 +103,13 @@ export function RuntimeEventsProvider({ children }: { children: React.ReactNode 
     };
 
     const start = async () => {
+      const mySeq = ++startSeqRef.current;
+
       // close any existing socket first
+      const prev = wsRef.current;
+      wsRef.current = null;
       try {
-        ws?.close();
+        prev?.close();
       } catch {
         // ignore
       }
@@ -110,14 +117,28 @@ export function RuntimeEventsProvider({ children }: { children: React.ReactNode 
       const { data } = await supabase.auth.getSession();
       const token = data?.session?.access_token;
 
+      if (!alive) return;
+
+      // If another start() began while we awaited getSession(), abort this one.
+      if (mySeq !== startSeqRef.current) return;
+
       if (!token) {
-        // Not signed in yet (or logged out) => don't connect.
         setConnected(false);
         scheduleReconnect();
         return;
       }
 
-      ws = connectWs(onEvent, token);
+      const ws = connectWs(onEvent, token);
+
+      // If superseded immediately after creating the socket, close it.
+      if (mySeq !== startSeqRef.current) {
+        try {
+          ws.close();
+        } catch {}
+        return;
+      }
+
+      wsRef.current = ws;
 
       ws.addEventListener("open", () => {
         if (!alive) return;
@@ -136,7 +157,7 @@ export function RuntimeEventsProvider({ children }: { children: React.ReactNode 
         if (!alive) return;
         setConnected(false);
         try {
-          ws?.close();
+          wsRef.current?.close();
         } catch {
           // ignore
         }
@@ -144,11 +165,12 @@ export function RuntimeEventsProvider({ children }: { children: React.ReactNode 
       });
     };
 
-    // Reconnect on auth changes (login/logout/token refresh)
-    const { data: authSub } = supabase.auth.onAuthStateChange(() => {
+    const { data: authSub } = supabase.auth.onAuthStateChange((event) => {
       if (!alive) return;
 
-      // Clear per-user runtime cache when identity changes
+      // Avoid immediate double-connect (we already call start() below)
+      if (event === "INITIAL_SESSION") return;
+
       setBotStatus(null);
       setLogs([]);
       setTrades([]);
@@ -167,10 +189,11 @@ export function RuntimeEventsProvider({ children }: { children: React.ReactNode 
       authSub?.subscription?.unsubscribe();
 
       try {
-        ws?.close();
+        wsRef.current?.close();
       } catch {
         // ignore
       }
+      wsRef.current = null;
     };
   }, []);
 
