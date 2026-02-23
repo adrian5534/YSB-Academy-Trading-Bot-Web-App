@@ -1,6 +1,7 @@
 import React from "react";
-import type { WsEvent } from "@/lib/api";
-import { connectWs } from "@/lib/api";
+import type { WsEvent } from "@/lib/ws";
+import { connectWs } from "@/lib/ws";
+import { supabase } from "@/lib/supabase";
 
 type RuntimeState = {
   connected: boolean;
@@ -55,15 +56,14 @@ export function RuntimeEventsProvider({ children }: { children: React.ReactNode 
       if (!alive) return;
       clearRetryTimer();
 
-      // exponential backoff (1s, 2s, 4s, ... up to 30s) + small jitter
       const base = Math.min(30_000, 1000 * Math.pow(2, retry));
       const jitter = Math.floor(Math.random() * 250);
       const delay = base + jitter;
 
-      retry = Math.min(retry + 1, 6); // cap growth
+      retry = Math.min(retry + 1, 6);
       retryTimer = setTimeout(() => {
         if (!alive) return;
-        start();
+        void start();
       }, delay);
     };
 
@@ -99,7 +99,7 @@ export function RuntimeEventsProvider({ children }: { children: React.ReactNode 
       }
     };
 
-    const start = () => {
+    const start = async () => {
       // close any existing socket first
       try {
         ws?.close();
@@ -107,7 +107,17 @@ export function RuntimeEventsProvider({ children }: { children: React.ReactNode 
         // ignore
       }
 
-      ws = connectWs(onEvent);
+      const { data } = await supabase.auth.getSession();
+      const token = data?.session?.access_token;
+
+      if (!token) {
+        // Not signed in yet (or logged out) => don't connect.
+        setConnected(false);
+        scheduleReconnect();
+        return;
+      }
+
+      ws = connectWs(onEvent, token);
 
       ws.addEventListener("open", () => {
         if (!alive) return;
@@ -125,7 +135,6 @@ export function RuntimeEventsProvider({ children }: { children: React.ReactNode 
       ws.addEventListener("error", () => {
         if (!alive) return;
         setConnected(false);
-        // some browsers won’t fire "close" after "error" reliably
         try {
           ws?.close();
         } catch {
@@ -135,11 +144,28 @@ export function RuntimeEventsProvider({ children }: { children: React.ReactNode 
       });
     };
 
-    start();
+    // Reconnect on auth changes (login/logout/token refresh)
+    const { data: authSub } = supabase.auth.onAuthStateChange(() => {
+      if (!alive) return;
+
+      // Clear per-user runtime cache when identity changes
+      setBotStatus(null);
+      setLogs([]);
+      setTrades([]);
+      save("ysb.botStatus", null);
+      save("ysb.logs", []);
+      save("ysb.trades", []);
+
+      void start();
+    });
+
+    void start();
 
     return () => {
       alive = false;
       clearRetryTimer();
+      authSub?.subscription?.unsubscribe();
+
       try {
         ws?.close();
       } catch {
@@ -154,7 +180,6 @@ export function RuntimeEventsProvider({ children }: { children: React.ReactNode 
   }, []);
 
   const value: RuntimeState = { connected, botStatus, logs, trades, clearLogs };
-
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 
