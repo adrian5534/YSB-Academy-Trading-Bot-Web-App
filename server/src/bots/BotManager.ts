@@ -141,7 +141,7 @@ export class BotManager {
     const t = setTimeout(() => {
       this.reconcileTimers.delete(ak);
       void this.reconcileAccountLiveTrades(userId, accountId, { force: true }).catch((e) =>
-        this.hub.log("reconcile (scheduled) failed", { accountId, error: String(e) }),
+        this.wsLog(userId, "reconcile (scheduled) failed", { accountId, error: String(e) }),
       );
     }, delayMs);
     this.reconcileTimers.set(ak, t);
@@ -149,6 +149,70 @@ export class BotManager {
 
   constructor(private hub: WsHub) {
     // No global streaming client. All market data access is scoped via per-account clients.
+  }
+
+  // ✅ Emit helpers that scope to a single user (prevents cross-user log/status/trade leakage)
+  private wsLog(userId: string, message: string, meta?: Record<string, unknown>) {
+    const hub: any = this.hub as any;
+    const safeMeta = { ...(meta ?? {}), user_id: userId };
+
+    // Prefer a scoped signature if the hub supports it.
+    // Supported patterns (we try both for compatibility):
+    //   hub.log(message, meta, userId)
+    //   hub.log(userId, message, meta)
+    try {
+      if (typeof hub?.log === "function") {
+        try {
+          hub.log(message, safeMeta, userId);
+          return;
+        } catch {
+          // ignore, try alt signature below
+        }
+        try {
+          hub.log(userId, message, safeMeta);
+          return;
+        } catch {
+          // ignore, fallback below
+        }
+        hub.log(message, safeMeta); // fallback (may broadcast if hub is not fixed yet)
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  private wsStatus(userId: string, payload: any) {
+    const hub: any = this.hub as any;
+    try {
+      if (typeof hub?.status === "function") {
+        // Try scoped form first, then fallback.
+        try {
+          hub.status(payload, userId);
+          return;
+        } catch {
+          hub.status(payload);
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  private wsTrade(userId: string, trade: any) {
+    const hub: any = this.hub as any;
+    try {
+      if (typeof hub?.trade === "function") {
+        // Try scoped form first, then fallback.
+        try {
+          hub.trade(trade, userId);
+          return;
+        } catch {
+          hub.trade(trade);
+        }
+      }
+    } catch {
+      // ignore
+    }
   }
 
   // Status with per-run list
@@ -203,19 +267,21 @@ export class BotManager {
     };
     this.runs.set(key, bot);
 
-    this.hub.log("bot.configs", { userId, runId, name, configs: bot.configs });
+    this.wsLog(userId, "bot.configs", { userId, runId, name, configs: bot.configs });
     bot.timer = setInterval(() => {
-      void this.tick(bot).catch((e: any) => this.hub.log(`tick error: ${e?.stack || e?.message || String(e)}`));
+      void this.tick(bot).catch((e: any) =>
+        this.wsLog(bot.userId, `tick error: ${e?.stack || e?.message || String(e)}`),
+      );
     }, 5000);
 
-    this.hub.status(this.getStatus(userId));
-    this.hub.log("bot started", { userId, runId, name, configs: bot.configs.length });
+    this.wsStatus(userId, this.getStatus(userId));
+    this.wsLog(userId, "bot started", { userId, runId, name, configs: bot.configs.length });
   }
 
   // Deprecated global stop; keep no-op unless name provided (back-compat)
   async stop(userId: string, name?: string) {
     if (!name) {
-      this.hub.log("stop called without name; ignoring to avoid stop-all", { userId });
+      this.wsLog(userId, "stop called without name; ignoring to avoid stop-all", { userId });
       return;
     }
     const key = this.runKey(userId, name);
@@ -224,8 +290,8 @@ export class BotManager {
     if (bot) this.clearRunReconcileTimers(bot);
     this.runs.delete(key);
     this.clearRunEphemeralState(userId, name);
-    this.hub.log("bot stopped", { userId, runId: name });
-    this.hub.status(this.getStatus(userId));
+    this.wsLog(userId, "bot stopped", { userId, runId: name });
+    this.wsStatus(userId, this.getStatus(userId));
   }
 
   // Stop this specific runId
@@ -240,7 +306,7 @@ export class BotManager {
         try {
           await this.reconcileAccountLiveTrades(userId, accountId, { force: true });
         } catch (e) {
-          this.hub.log("reconcile on stop failed", { accountId, error: String(e) });
+          this.wsLog(userId, "reconcile on stop failed", { accountId, error: String(e) });
         }
       }
     }
@@ -249,8 +315,8 @@ export class BotManager {
     if (bot) this.clearRunReconcileTimers(bot);
     this.runs.delete(key);
     this.clearRunEphemeralState(userId, runId);
-    this.hub.log("bot stopped", { userId, runId });
-    this.hub.status(this.getStatus(userId));
+    this.wsLog(userId, "bot stopped", { userId, runId });
+    this.wsStatus(userId, this.getStatus(userId));
   }
 
   // prevent double-decrement when a trade is closed early + later finalized
@@ -307,7 +373,7 @@ export class BotManager {
       try {
         token = await this.accountToken(accountId);
       } catch (e) {
-        this.hub.log("reconcile: token decrypt failed", { accountId, error: String(e) });
+        this.wsLog(userId, "reconcile: token decrypt failed", { accountId, error: String(e) });
         return;
       }
       if (!token) return;
@@ -402,11 +468,11 @@ export class BotManager {
               .select("*")
               .single();
 
-            if (updated) this.hub.trade(updated);
+            if (updated) this.wsTrade(userId, updated);
             this.releaseOpenOnceByTradeId(String(tr.id));
-            this.hub.log("reconciled live trade closed", { tradeId: tr.id, contractId, sellPrice, profit });
+            this.wsLog(userId, "reconciled live trade closed", { tradeId: tr.id, contractId, sellPrice, profit });
           } catch (e) {
-            this.hub.log("reconcile: db update failed", { tradeId: tr.id, error: String(e) });
+            this.wsLog(userId, "reconcile: db update failed", { tradeId: tr.id, error: String(e) });
           }
           continue;
         }
@@ -440,7 +506,7 @@ export class BotManager {
           st.armedAt = Date.now();
           this.incArmed(ak);
 
-          this.hub.log("early sell armed", {
+          this.wsLog(userId, "early sell armed", {
             tradeId: tr.id,
             contractId,
             profitNow,
@@ -482,10 +548,10 @@ export class BotManager {
                 .select("*")
                 .single();
 
-              if (updated) this.hub.trade(updated);
+              if (updated) this.wsTrade(userId, updated);
               this.releaseOpenOnceByTradeId(String(tr.id));
 
-              this.hub.log("early sell executed", {
+              this.wsLog(userId, "early sell executed", {
                 tradeId: tr.id,
                 contractId,
                 profitNow,
@@ -495,7 +561,7 @@ export class BotManager {
 
               this.deleteEarlySellState(contractId);
             } else {
-              this.hub.log("early sell attempted (not sold yet)", {
+              this.wsLog(userId, "early sell attempted (not sold yet)", {
                 tradeId: tr.id,
                 contractId,
                 profitNow,
@@ -506,7 +572,7 @@ export class BotManager {
               this.scheduleReconcileSoon(userId, accountId, 1500);
             }
           } catch (e) {
-            this.hub.log("early sell failed", { tradeId: tr.id, contractId, error: String(e) });
+            this.wsLog(userId, "early sell failed", { tradeId: tr.id, contractId, error: String(e) });
             // keep armed; retry soon
             this.scheduleReconcileSoon(userId, accountId, 1500);
           }
@@ -555,15 +621,14 @@ export class BotManager {
   }
 
   private async tick(bot: Running) {
-    // Only touch this run
     bot.heartbeat_at = new Date().toISOString();
-    this.hub.status(this.getStatus(bot.userId));
+    this.wsStatus(bot.userId, this.getStatus(bot.userId));
 
     for (const cfg of bot.configs.filter((c) => c.enabled)) {
       try {
         await this.runConfig(bot, cfg);
       } catch (e: any) {
-        this.hub.log(`runConfig error: ${e?.stack || e?.message || String(e)}`, {
+        this.wsLog(bot.userId, `runConfig error: ${e?.stack || e?.message || String(e)}`, {
           symbol: cfg.symbol,
           timeframe: cfg.timeframe,
           strategy_id: cfg.strategy_id,
@@ -583,7 +648,7 @@ export class BotManager {
     if (!acc) throw new Error("account missing");
 
     if (acc.type !== "deriv") {
-      this.hub.log("skipping non-deriv account", { accountId: cfg.account_id, accountType: acc.type });
+      this.wsLog(bot.userId, "skipping non-deriv account", { accountId: cfg.account_id, accountType: acc.type });
       return;
     }
 
@@ -591,11 +656,11 @@ export class BotManager {
     try {
       token = await this.accountToken(cfg.account_id);
     } catch (e) {
-      this.hub.log("Failed to decrypt Deriv token", { error: String(e) });
+      this.wsLog(bot.userId, "Failed to decrypt Deriv token", { error: String(e) });
       return;
     }
     if (!token) {
-      this.hub.log("Deriv token missing after decrypt", { accountId: cfg.account_id });
+      this.wsLog(bot.userId, "Deriv token missing after decrypt", { accountId: cfg.account_id });
       return;
     }
 
@@ -604,7 +669,7 @@ export class BotManager {
     // ✅ reconcile stuck open DB trades (especially after stop/restart)
     if (cfg.mode === "live") {
       await this.reconcileAccountLiveTrades(bot.userId, cfg.account_id).catch((e) =>
-        this.hub.log("reconcile failed", { accountId: cfg.account_id, error: String(e) }),
+        this.wsLog(bot.userId, "reconcile failed", { accountId: cfg.account_id, error: String(e) }),
       );
     }
 
@@ -622,7 +687,7 @@ export class BotManager {
     // Backtest mode
     if (cfg.mode === "backtest") {
       try {
-        this.hub.log("starting backtest", { symbol: cfg.symbol, timeframe: cfg.timeframe, accountId: cfg.account_id });
+        this.wsLog(bot.userId, "starting backtest", { symbol: cfg.symbol, timeframe: cfg.timeframe, accountId: cfg.account_id });
 
         interface BacktestCandle {
           t: number; // epoch seconds
@@ -664,7 +729,7 @@ export class BotManager {
           } as BacktestInput,
           (msg: BacktestLogMessage): Promise<void> => {
             try {
-              this.hub.log(msg.message, { ...(msg.meta ?? {}), ts: msg.ts });
+              this.wsLog(bot.userId, msg.message, { ...(msg.meta ?? {}), ts: msg.ts });
             } catch {
               /* ignore */
             }
@@ -682,18 +747,18 @@ export class BotManager {
           try {
             const { data: inserted, error: insertErr } = await supabaseAdmin.from("trades").insert(toInsert).select("*");
             if (insertErr) {
-              this.hub.log("backtest persist error", { error: String(insertErr) });
+              this.wsLog(bot.userId, "backtest persist error", { error: String(insertErr) });
             } else {
-              for (const tr of inserted ?? []) this.hub.trade(tr);
+              for (const tr of inserted ?? []) this.wsTrade(bot.userId, tr);
             }
           } catch (e) {
-            this.hub.log("backtest persist exception", { error: String(e) });
+            this.wsLog(bot.userId, "backtest persist exception", { error: String(e) });
           }
         }
 
-        this.hub.log("backtest finished", { metrics: result?.metrics ?? {} });
+        this.wsLog(bot.userId, "backtest finished", { metrics: result?.metrics ?? {} });
       } catch (e) {
-        this.hub.log("backtest error", { error: String(e) });
+        this.wsLog(bot.userId, "backtest error", { error: String(e) });
       }
       return; // don't run live/paper flow after backtest
     }
@@ -710,7 +775,7 @@ export class BotManager {
     const maxOpenTrades = Math.max(1, Number(cfg.params?.max_open_trades ?? 5));
     const currentOpen = this.getOpenCount(bot, cfg);
     if (currentOpen >= maxOpenTrades) {
-      this.hub.log("open-trade limit reached", {
+      this.wsLog(bot.userId, "open-trade limit reached", {
         runId: bot.runId,
         cfg_id: cfg.id,
         symbol: cfg.symbol,
@@ -723,7 +788,7 @@ export class BotManager {
     // ✅ also apply the same limit to the global risk gate
     const gate = await canOpenTrade(bot.userId, { max_open_trades: maxOpenTrades });
     if (!gate.ok) {
-      this.hub.log("risk block", { reason: gate.reason, symbol: cfg.symbol });
+      this.wsLog(bot.userId, "risk block", { reason: gate.reason, symbol: cfg.symbol });
       return;
     }
 
@@ -740,7 +805,7 @@ export class BotManager {
         this.decOpen(bot, cfg);
       }
     } else if (cfg.mode === "live") {
-      this.hub.log("live mode requested (minimal implementation)", { symbol: cfg.symbol });
+      this.wsLog(bot.userId, "live mode requested (minimal implementation)", { symbol: cfg.symbol });
       const contractType = signal.side === "buy" ? "CALL" : "PUT";
       const stakeParam = Number(cfg.params?.stake ?? stake);
       const dur = Number(cfg.params?.duration ?? 5);
@@ -794,7 +859,7 @@ export class BotManager {
           .single();
 
         if (insert.data) {
-          this.hub.trade(insert.data);
+          this.wsTrade(bot.userId, insert.data);
           // track mapping so reconciliation / early sell can release the in-memory counter safely
           this.tradeToCfgKey.set(String(insert.data.id), this.cfgKey(bot, cfg));
         }
@@ -805,7 +870,7 @@ export class BotManager {
           const tradeId = String(insert?.data?.id ?? "");
           try {
             if (!contractId) {
-              this.hub.log("live finalize: missing contract_id");
+              this.wsLog(bot.userId, "live finalize: missing contract_id");
               return;
             }
 
@@ -834,10 +899,10 @@ export class BotManager {
                 .eq("id", tradeId)
                 .select("*")
                 .single();
-              if (updated) this.hub.trade(updated);
+              if (updated) this.wsTrade(bot.userId, updated);
             }
           } catch (e) {
-            this.hub.log("live finalize error", { error: String(e) });
+            this.wsLog(bot.userId, "live finalize error", { error: String(e) });
           } finally {
             if (tradeId) this.releaseOpenOnceByTradeId(tradeId);
             else this.decOpen(bot, cfg);
@@ -845,7 +910,7 @@ export class BotManager {
         }, ms);
       } catch (e) {
         this.decOpen(bot, cfg);
-        this.hub.log("live buy error", { error: String(e) });
+        this.wsLog(bot.userId, "live buy error", { error: String(e) });
       }
     }
   }
@@ -889,8 +954,8 @@ export class BotManager {
       .single();
 
     if (error) throw error;
-    this.hub.trade(data);
-    this.hub.log("paper trade", { symbol: cfg.symbol, side: signal.side, profit });
+    this.wsTrade(userId, data);
+    this.wsLog(userId, "paper trade", { symbol: cfg.symbol, side: signal.side, profit });
   }
 
   // Replace running configs for a user and apply immediately
@@ -901,8 +966,8 @@ export class BotManager {
       bot.configs = configs.map((c) => ({ ...c, id: uuidv4() }));
       updated++;
     }
-    this.hub.log("bot.configs.updated", { userId, runs_updated: updated });
-    this.hub.status(this.getStatus(userId));
+    this.wsLog(userId, "bot.configs.updated", { userId, runs_updated: updated });
+    this.wsStatus(userId, this.getStatus(userId));
   }
 
   private handleTickSafely(tick: any) {

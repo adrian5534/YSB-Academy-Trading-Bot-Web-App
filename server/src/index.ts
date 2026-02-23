@@ -1,6 +1,6 @@
 import express from "express";
 import cors from "cors";
-import { createServer } from "http";
+import { createServer, type IncomingMessage } from "http";
 import { WebSocketServer } from "ws";
 import { env } from "./env";
 import { registerRoutes } from "./routes";
@@ -55,6 +55,45 @@ const server = createServer(app);
 const wss = new WebSocketServer({ server, path: "/ws" });
 const hub = new WsHub(wss);
 
+/**
+ * WebSocket auth + user scoping:
+ * Clients must connect with ?access_token=<supabase access token> (or Authorization: Bearer <token> in non-browser clients).
+ */
+function getWsToken(req: IncomingMessage): string | null {
+  // 1) Authorization header (works for non-browser clients)
+  const auth = req.headers["authorization"];
+  if (typeof auth === "string") {
+    const m = auth.match(/^Bearer\s+(.+)$/i);
+    if (m?.[1]) return m[1].trim();
+  }
+
+  // 2) Query params (works for browsers)
+  try {
+    const url = new URL(req.url ?? "", "http://localhost");
+    return url.searchParams.get("access_token") || url.searchParams.get("token");
+  } catch {
+    return null;
+  }
+}
+
+wss.on("connection", async (ws, req) => {
+  try {
+    const token = getWsToken(req);
+    if (!token) return ws.close(1008, "unauthorized");
+
+    const { data, error } = await supabaseAdmin.auth.getUser(token);
+    if (error || !data?.user?.id) return ws.close(1008, "unauthorized");
+
+    hub.attachClient(ws, data.user.id);
+  } catch {
+    try {
+      ws.close(1011, "server_error");
+    } catch {
+      // ignore
+    }
+  }
+});
+
 // register all routes (routes include /api/health and stripe endpoints)
 registerRoutes(app, hub);
 
@@ -82,14 +121,17 @@ async function handleStripeEvent(event: Stripe.Event) {
   if (event.type === "checkout.session.completed") {
     try {
       const session = event.data.object as Stripe.Checkout.Session;
-      const subscriptionId = typeof session.subscription === "string" ? session.subscription : (session.subscription as any)?.id;
+      const subscriptionId =
+        typeof session.subscription === "string" ? session.subscription : (session.subscription as any)?.id;
       const customerId = typeof session.customer === "string" ? session.customer : (session.customer as any)?.id;
 
       // If subscription id present, fetch subscription to get canonical status and period end
       if (subscriptionId) {
         const sub = await stripe.subscriptions.retrieve(subscriptionId);
         const status = sub.status;
-        const current_period_end = sub.current_period_end ? new Date(Number(sub.current_period_end) * 1000).toISOString() : null;
+        const current_period_end = sub.current_period_end
+          ? new Date(Number(sub.current_period_end) * 1000).toISOString()
+          : null;
         const plan = status === "active" || status === "trialing" ? "pro" : "free";
 
         // Try to find the user by customer id first
@@ -136,7 +178,9 @@ async function handleStripeEvent(event: Stripe.Event) {
       const sub = event.data.object as Stripe.Subscription;
       const customerId = String(sub.customer);
       const status = sub.status;
-      const current_period_end = sub.current_period_end ? new Date(Number(sub.current_period_end) * 1000).toISOString() : null;
+      const current_period_end = sub.current_period_end
+        ? new Date(Number(sub.current_period_end) * 1000).toISOString()
+        : null;
       const plan = status === "active" || status === "trialing" ? "pro" : "free";
 
       const { data: row } = await supabaseAdmin
