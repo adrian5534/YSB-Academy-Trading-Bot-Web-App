@@ -14,6 +14,20 @@ export class WsHub {
     this.wss = wss;
   }
 
+  private isOpen(ws: WebSocket) {
+    // ws.OPEN is 1 but not always available as a static; literal is safest here.
+    return (ws as any).readyState === 1;
+  }
+
+  private safeSend(ws: WebSocket, data: string, onDead?: () => void) {
+    try {
+      if (!this.isOpen(ws)) return onDead?.();
+      ws.send(data);
+    } catch {
+      onDead?.();
+    }
+  }
+
   /** Call this after you authenticate the websocket connection */
   attachClient(ws: WebSocket, userId: string) {
     this.socketToUser.set(ws, userId);
@@ -40,11 +54,18 @@ export class WsHub {
     if (set.size === 0) this.userToSockets.delete(userId);
   }
 
+  /**
+   * Broadcast to *authenticated* clients only (those that called attachClient()).
+   * This avoids leaking events to sockets that connected but did not authenticate.
+   */
   broadcast(msg: WsPayload) {
     const data = JSON.stringify(msg);
-    for (const client of this.wss.clients) {
-      const ws = client as WebSocket;
-      if (ws.readyState === 1) ws.send(data);
+
+    for (const [userId, set] of this.userToSockets) {
+      for (const ws of set) {
+        this.safeSend(ws, data, () => set.delete(ws));
+      }
+      if (set.size === 0) this.userToSockets.delete(userId);
     }
   }
 
@@ -54,13 +75,12 @@ export class WsHub {
 
     const data = JSON.stringify(msg);
     for (const ws of set) {
-      if (ws.readyState === 1) ws.send(data);
-      else set.delete(ws);
+      this.safeSend(ws, data, () => set.delete(ws));
     }
     if (set.size === 0) this.userToSockets.delete(userId);
   }
 
-  // Backwards compatible: if userId is omitted, it broadcasts.
+  // Backwards compatible: if userId is omitted, it broadcasts (to authed clients only).
   log(message: string, meta: unknown = {}, userId?: string) {
     const msg: WsPayload = {
       type: WS_EVENTS.BOT_LOG,

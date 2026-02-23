@@ -52,6 +52,9 @@ export class BotManager {
   private reconcileTimers = new Map<string, NodeJS.Timeout>(); // key = `${userId}::${accountId}`
   private reconcileInFlight = new Set<string>(); // key = `${userId}::${accountId}`
 
+  // ✅ throttle noisy tick logs (per user+symbol)
+  private lastTickLogAt = new Map<string, number>();
+
   private runKey(userId: string, runId: string) {
     return `${userId}::${runId}`;
   }
@@ -973,28 +976,28 @@ export class BotManager {
   private handleTickSafely(tick: any) {
     // Defensive, non-intrusive tick handling (no cross-run side effects)
     try {
-      if (!tick || typeof tick.epoch !== "number") {
-        return;
-      }
+      if (!tick || typeof tick.epoch !== "number") return;
+
       const symbol = String(tick.symbol ?? "").trim();
       const epoch = Number(tick.epoch);
       const quote = typeof tick.quote === "number" ? tick.quote : tick.quote ? Number(tick.quote) : undefined;
       if (!symbol) return;
 
-      try {
-        this.hub.log("tick", { symbol, epoch, quote });
-      } catch {
-        /* ignore hub logging errors */
-      }
+      // ✅ DO NOT broadcast tick logs (avoid cross-user leakage + log spam).
+      // Only log to users who have an enabled config matching this symbol.
+      const now = Date.now();
+      const THROTTLE_MS = 2000;
 
-      // Optional lightweight correlation (logging only)
       for (const bot of this.runs.values()) {
         const matches = bot.configs.some((c) => c.enabled && c.symbol === symbol);
-        if (matches) {
-          try {
-            this.hub.log("tick match", { userId: bot.userId, symbol, epoch });
-          } catch {}
-        }
+        if (!matches) continue;
+
+        const k = `${bot.userId}::${symbol}`;
+        const last = this.lastTickLogAt.get(k) ?? 0;
+        if (now - last < THROTTLE_MS) continue;
+        this.lastTickLogAt.set(k, now);
+
+        this.wsLog(bot.userId, "tick", { symbol, epoch, quote });
       }
     } catch (e) {
       console.error("tick error (final)", (e as any) && ((e as any).stack || (e as any).message || e));
