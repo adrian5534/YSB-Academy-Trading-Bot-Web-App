@@ -42,6 +42,11 @@ export class BotManager {
   // cfgKey (`userId::runId::cfgId`) -> epochMs
   private cooldownUntilByCfgKey = new Map<string, number>();
 
+  // ✅ losing-streak protection runtime state (per run/config)
+  // cfgKey (`userId::runId::cfgId`) -> count / epochMs
+  private consecutiveLossesByCfgKey = new Map<string, number>();
+  private lossPauseUntilByCfgKey = new Map<string, number>();
+
   // ✅ throttle reconciliation per account (kept as accountId-keyed for backward behavior)
   private lastReconcileAt = new Map<string, number>();
 
@@ -69,6 +74,106 @@ export class BotManager {
 
   private cfgKey(bot: Running, cfg: BotConfig) {
     return `${bot.userId}::${bot.runId}::${cfg.id}`;
+  }
+
+  // ---- losing streak protection helpers (runtime state) ----
+  private parseMaxConsecutiveLosses(cfg: BotConfig): number {
+    const raw = (cfg?.params as any)?.max_consecutive_losses;
+    const n = typeof raw === "number" ? raw : raw === "" || raw == null ? 0 : Number(raw);
+    if (!Number.isFinite(n)) return 0;
+    // Clamp (0 disables)
+    return Math.min(100, Math.max(0, Math.floor(n)));
+  }
+
+  private parsePauseAfterLossMinutes(cfg: BotConfig): number {
+    const raw = (cfg?.params as any)?.pause_after_loss_minutes;
+    const n = typeof raw === "number" ? raw : raw === "" || raw == null ? 0 : Number(raw);
+    if (!Number.isFinite(n)) return 0;
+    // Clamp (0 disables), max 24h
+    return Math.min(1440, Math.max(0, Math.floor(n)));
+  }
+
+  private getConsecutiveLosses(cfgKey: string): number {
+    return this.consecutiveLossesByCfgKey.get(cfgKey) ?? 0;
+  }
+
+  private setConsecutiveLosses(cfgKey: string, n: number) {
+    const v = Math.max(0, Math.floor(n));
+    if (!v) this.consecutiveLossesByCfgKey.delete(cfgKey);
+    else this.consecutiveLossesByCfgKey.set(cfgKey, v);
+  }
+
+  private getLossPauseUntil(cfgKey: string): number {
+    return this.lossPauseUntilByCfgKey.get(cfgKey) ?? 0;
+  }
+
+  private isLossPauseActive(cfgKey: string): { active: boolean; remainingMs: number } {
+    const until = this.getLossPauseUntil(cfgKey);
+    const now = Date.now();
+    if (until > now) return { active: true, remainingMs: until - now };
+    return { active: false, remainingMs: 0 };
+  }
+
+  private startLossPause(cfgKey: string, minutes: number) {
+    const min = Math.max(0, Math.floor(minutes));
+    if (!min) return;
+
+    const now = Date.now();
+    const nextUntil = now + min * 60_000;
+
+    // If already paused, extend to the later timestamp
+    const prev = this.lossPauseUntilByCfgKey.get(cfgKey) ?? 0;
+    this.lossPauseUntilByCfgKey.set(cfgKey, Math.max(prev, nextUntil));
+  }
+
+  private maybeApplyLosingStreakProtection(opts: {
+    userId: string;
+    cfgKey: string;
+    cfg?: BotConfig;
+    profit: number;
+    reason: string;
+    meta?: Record<string, unknown>;
+  }) {
+    const { userId, cfgKey, cfg, profit, reason, meta } = opts;
+
+    if (!cfg) return;
+    if (!Number.isFinite(profit)) return;
+
+    // Reset after a winning trade
+    if (profit > 0) {
+      this.setConsecutiveLosses(cfgKey, 0);
+      return;
+    }
+
+    // Only count losses (profit < 0). Profit === 0 leaves streak unchanged.
+    if (profit >= 0) return;
+
+    const maxLosses = this.parseMaxConsecutiveLosses(cfg);
+    const pauseMin = this.parsePauseAfterLossMinutes(cfg);
+    if (!maxLosses || !pauseMin) {
+      // still track losses if maxLosses configured but pause disabled? requirements say pause when reaches max
+      // We'll track only when maxLosses is set to avoid surprise state.
+      if (maxLosses) this.setConsecutiveLosses(cfgKey, this.getConsecutiveLosses(cfgKey) + 1);
+      return;
+    }
+
+    const nextLosses = this.getConsecutiveLosses(cfgKey) + 1;
+    this.setConsecutiveLosses(cfgKey, nextLosses);
+
+    if (nextLosses >= maxLosses) {
+      this.startLossPause(cfgKey, pauseMin);
+      const until = this.getLossPauseUntil(cfgKey);
+
+      this.wsLog(userId, "losing-streak pause started", {
+        ...meta,
+        reason,
+        profit,
+        consecutive_losses: nextLosses,
+        max_consecutive_losses: maxLosses,
+        pause_after_loss_minutes: pauseMin,
+        pauseUntil: new Date(until).toISOString(),
+      });
+    }
   }
 
   // ---- cooldown helpers (runtime state) ----
@@ -194,6 +299,16 @@ export class BotManager {
     }
   }
 
+  private clearRunLosingStreakState(userId: string, runId: string) {
+    const prefix = `${userId}::${runId}::`;
+    for (const k of Array.from(this.consecutiveLossesByCfgKey.keys())) {
+      if (k.startsWith(prefix)) this.consecutiveLossesByCfgKey.delete(k);
+    }
+    for (const k of Array.from(this.lossPauseUntilByCfgKey.keys())) {
+      if (k.startsWith(prefix)) this.lossPauseUntilByCfgKey.delete(k);
+    }
+  }
+
   private clearRunReconcileTimers(bot: Running) {
     const accountIds = Array.from(new Set(bot.configs.map((c) => c.account_id)));
     for (const accountId of accountIds) {
@@ -217,6 +332,17 @@ export class BotManager {
       const prefix = `${userId}::${runId}::`;
       for (const k of Array.from(this.lastTradeAtByCfgKey.keys())) {
         if (k.startsWith(prefix)) this.lastTradeAtByCfgKey.delete(k);
+      }
+    }
+
+    // ✅ losing-streak protection state is keyed by run/config
+    {
+      const prefix = `${userId}::${runId}::`;
+      for (const k of Array.from(this.consecutiveLossesByCfgKey.keys())) {
+        if (k.startsWith(prefix)) this.consecutiveLossesByCfgKey.delete(k);
+      }
+      for (const k of Array.from(this.lossPauseUntilByCfgKey.keys())) {
+        if (k.startsWith(prefix)) this.lossPauseUntilByCfgKey.delete(k);
       }
     }
 
@@ -577,14 +703,25 @@ export class BotManager {
             if (updated) this.wsTrade(userId, updated);
 
             if (cfgKey) {
-              // only cool down execution for the cfg that placed the trade (per run/config)
               const botAndCfg = this.findBotAndCfgByCfgKey(cfgKey);
+
+              // ✅ do not reset cooldown_after_loss behavior
               this.maybeCooldownAfterLoss({
                 userId,
                 cfgKey,
                 cfg: botAndCfg?.cfg,
                 profit,
                 reason: "reconcile:settled_loss",
+                meta: { tradeId: tr.id, contractId, accountId },
+              });
+
+              // ✅ losing-streak protection (independent per cfg)
+              this.maybeApplyLosingStreakProtection({
+                userId,
+                cfgKey,
+                cfg: botAndCfg?.cfg,
+                profit,
+                reason: "reconcile:settled_result",
                 meta: { tradeId: tr.id, contractId, accountId },
               });
             }
@@ -669,12 +806,24 @@ export class BotManager {
 
               if (cfgKey) {
                 const botAndCfg = this.findBotAndCfgByCfgKey(cfgKey);
+
+                // ✅ do not reset cooldown_after_loss behavior
                 this.maybeCooldownAfterLoss({
                   userId,
                   cfgKey,
                   cfg: botAndCfg?.cfg,
                   profit,
                   reason: "reconcile:early_sell_loss",
+                  meta: { tradeId: tr.id, contractId, accountId, early_sold: true },
+                });
+
+                // ✅ losing-streak protection (independent per cfg)
+                this.maybeApplyLosingStreakProtection({
+                  userId,
+                  cfgKey,
+                  cfg: botAndCfg?.cfg,
+                  profit,
+                  reason: "reconcile:early_sell_result",
                   meta: { tradeId: tr.id, contractId, accountId, early_sold: true },
                 });
               }
@@ -917,8 +1066,9 @@ export class BotManager {
     if (!signal.side) return;
     if (signal.confidence < 0.5) return;
 
-    // ✅ cooldown gate (execution only; does not block signal generation)
     const ck = this.cfgKey(bot, cfg);
+
+    // ✅ cooldown gate (execution only; does not block signal generation)
     const cd = this.isInCooldown(ck);
     if (cd.active) {
       this.wsLog(bot.userId, "cooldown active (skipping execution)", {
@@ -941,6 +1091,22 @@ export class BotManager {
         remaining_sec: Math.ceil(mt.remainingMs / 1000),
         min_seconds_between_trades: mt.seconds,
         lastTradeAt: new Date(this.getLastTradeAt(ck)).toISOString(),
+      });
+      return;
+    }
+
+    // ✅ losing-streak pause gate (execution only; does not block signal generation)
+    const lp = this.isLossPauseActive(ck);
+    if (lp.active) {
+      this.wsLog(bot.userId, "losing-streak pause active (skipping execution)", {
+        runId: bot.runId,
+        cfg_id: cfg.id,
+        symbol: cfg.symbol,
+        remaining_sec: Math.ceil(lp.remainingMs / 1000),
+        pauseUntil: new Date(this.getLossPauseUntil(ck)).toISOString(),
+        consecutive_losses: this.getConsecutiveLosses(ck),
+        max_consecutive_losses: this.parseMaxConsecutiveLosses(cfg),
+        pause_after_loss_minutes: this.parsePauseAfterLossMinutes(cfg),
       });
       return;
     }
@@ -977,13 +1143,29 @@ export class BotManager {
         // ✅ mark trade executed (for min time between trades)
         this.markTradeExecuted(ck);
 
-        // ✅ if losing paper trade => cooldown
+        // ✅ do not reset cooldown_after_loss behavior
         this.maybeCooldownAfterLoss({
           userId: bot.userId,
           cfgKey: ck,
           cfg,
           profit,
           reason: "paper_trade_loss",
+          meta: {
+            runId: bot.runId,
+            cfg_id: cfg.id,
+            symbol: cfg.symbol,
+            timeframe: cfg.timeframe,
+            strategy_id: cfg.strategy_id,
+          },
+        });
+
+        // ✅ losing-streak protection (independent per cfg)
+        this.maybeApplyLosingStreakProtection({
+          userId: bot.userId,
+          cfgKey: ck,
+          cfg,
+          profit,
+          reason: "paper_trade_result",
           meta: { runId: bot.runId, cfg_id: cfg.id, symbol: cfg.symbol, timeframe: cfg.timeframe, strategy_id: cfg.strategy_id },
         });
       } finally {
@@ -1007,7 +1189,7 @@ export class BotManager {
           currency: "USD",
         });
 
-        // ✅ mark trade executed as soon as buy succeeds (even if DB insert later fails)
+        // ✅ mark trade executed as soon as buy succeeds
         this.markTradeExecuted(ck);
 
         // Insert opened live trade
@@ -1090,13 +1272,23 @@ export class BotManager {
               if (updated) this.wsTrade(bot.userId, updated);
             }
 
-            // ✅ if losing live trade => cooldown (per cfg)
+            // ✅ do not reset cooldown_after_loss behavior
             this.maybeCooldownAfterLoss({
               userId: bot.userId,
               cfgKey: ck,
               cfg,
               profit,
               reason: "live_finalize_loss",
+              meta: { runId: bot.runId, tradeId, contractId, symbol: cfg.symbol },
+            });
+
+            // ✅ losing-streak protection (independent per cfg)
+            this.maybeApplyLosingStreakProtection({
+              userId: bot.userId,
+              cfgKey: ck,
+              cfg,
+              profit,
+              reason: "live_finalize_result",
               meta: { runId: bot.runId, tradeId, contractId, symbol: cfg.symbol },
             });
           } catch (e) {
