@@ -1238,6 +1238,21 @@ export class BotManager {
     }
   }
 
+  private buildSignalKey(candles: any[], signal: any): string {
+    const lastCandleT = Number(candles?.[candles.length - 1]?.t ?? 0); // epoch seconds
+    const side = String(signal?.side ?? "");
+    const reason = String(signal?.reason ?? "");
+    return `${lastCandleT}::${side}::${reason}`;
+  }
+
+  private hasExecutedSignal(cfgKey: string, signalKey: string): boolean {
+    return (this.lastExecutedSignalKeyByCfgKey.get(cfgKey) ?? "") === signalKey;
+  }
+
+  private markSignalExecuted(cfgKey: string, signalKey: string) {
+    this.lastExecutedSignalKeyByCfgKey.set(cfgKey, signalKey);
+  }
+
   private async runConfig(bot: Running, cfg: BotConfig) {
     // Load account to get type + token
     const { data: acc, error: accErr } = await supabaseAdmin
@@ -1374,6 +1389,18 @@ export class BotManager {
 
     const ck = this.cfgKey(bot, cfg);
 
+    // ✅ Dedup: don't execute more than once per same candle/signal
+    const signalKey = this.buildSignalKey(candles, signal);
+    if (this.hasExecutedSignal(ck, signalKey)) {
+      this.wsLog(bot.userId, "duplicate signal (skipping execution)", {
+        runId: bot.runId,
+        cfg_id: cfg.id,
+        symbol: cfg.symbol,
+        signalKey,
+      });
+      return;
+    }
+
     // ✅ spike exhaustion pause gate (execution only; does not block signal generation)
     const sp = this.isSpikePauseActive(ck);
     if (sp.active) {
@@ -1508,7 +1535,8 @@ export class BotManager {
       try {
         const { profit } = await this.paperTrade(bot.userId, cfg, signal, stake);
 
-        // ✅ record trade execution (min interval + trades/minute)
+        // ✅ mark executed (dedupe) + record trade execution (min interval + trades/minute)
+        this.markSignalExecuted(ck, signalKey);
         this.markTradeExecuted(ck);
 
         // ✅ do not reset cooldown_after_loss behavior
@@ -1541,6 +1569,7 @@ export class BotManager {
       }
     } else if (cfg.mode === "live") {
       this.wsLog(bot.userId, "live mode requested (minimal implementation)", { symbol: cfg.symbol });
+
       const contractType = signal.side === "buy" ? "CALL" : "PUT";
       const stakeParam = Number(cfg.params?.stake ?? stake);
       const dur = Number(cfg.params?.duration ?? 5);
@@ -1569,7 +1598,7 @@ export class BotManager {
         const earlyEnabled = Boolean((cfg.params as any)?.early_sell_enabled ?? false);
         const earlyProfit = Math.max(0, Number((cfg.params as any)?.early_sell_profit ?? 0) || 0);
 
-        const insert = await supabaseAdmin
+        const insert = await supabaseAdmin // ✅ make sure this is not truncated to "dmin"
           .from("trades")
           .insert({
             user_id: bot.userId,
