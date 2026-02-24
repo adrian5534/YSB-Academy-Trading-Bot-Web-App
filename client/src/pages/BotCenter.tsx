@@ -1282,7 +1282,7 @@ function StrategySettingsModal({
       const cd = parseNum(next.cooldown_after_loss);
       next.cooldown_after_loss = Math.max(
         0,
-        Math.floor(cd ?? Number(params.cooldown_after_loss ?? 0) || 0),
+        Math.floor(cd ?? (Number(params.cooldown_after_loss ?? 0) || 0)),
       );
     }
 
