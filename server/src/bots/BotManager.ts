@@ -1598,6 +1598,9 @@ export class BotManager {
           currency: "USD",
         });
 
+        // ✅ Dedup latch for LIVE too (prevents re-buying same candle/signal on next 5s tick)
+        this.markSignalExecuted(ck, signalKey);
+
         // ✅ record trade execution as soon as buy succeeds (min interval + trades/minute)
         this.markTradeExecuted(ck);
 
