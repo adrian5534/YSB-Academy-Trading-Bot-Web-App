@@ -1698,6 +1698,64 @@ function StrategySettingsModal({
                 </div>
               </div>
 
+              {/* ✅ Tick volatility filter */}
+              <div className="rounded-xl border border-border bg-muted/20 p-3 space-y-3">
+                <div className="text-sm font-semibold">Tick volatility filter</div>
+
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div>
+                    <label className="block text-sm mb-1">Tick window (N)</label>
+                    <input
+                      type="number"
+                      inputMode="numeric"
+                      min={5}
+                      max={500}
+                      step={1}
+                      className="w-full rounded-lg border border-border bg-background px-3 py-2"
+                      value={form.tick_window ?? ""}
+                      onChange={(e) => setForm({ ...form, tick_window: e.target.value })}
+                    />
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      Range is computed over the last N ticks (recommended 20–50).
+                    </div>
+                  </div>
+
+                  <div className="text-xs text-muted-foreground md:pt-7">
+                    Set both range limits to 0 to disable. Works on synthetic indices (no volume needed).
+                  </div>
+                </div>
+
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div>
+                    <label className="block text-sm mb-1">Min tick range</label>
+                    <input
+                      type="number"
+                      inputMode="decimal"
+                      min={0}
+                      step={0.01}
+                      className="w-full rounded-lg border border-border bg-background px-3 py-2"
+                      value={form.tick_range_min ?? ""}
+                      onChange={(e) => setForm({ ...form, tick_range_min: e.target.value })}
+                    />
+                    <div className="mt-1 text-xs text-muted-foreground">Skip execution if range is below this.</div>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm mb-1">Max tick range</label>
+                    <input
+                      type="number"
+                      inputMode="decimal"
+                      min={0}
+                      step={0.01}
+                      className="w-full rounded-lg border border-border bg-background px-3 py-2"
+                      value={form.tick_range_max ?? ""}
+                      onChange={(e) => setForm({ ...form, tick_range_max: e.target.value })}
+                    />
+                    <div className="mt-1 text-xs text-muted-foreground">Skip execution if range is above this.</div>
+                  </div>
+                </div>
+              </div>
+
               {risk && (
                 <div>
                   <div className="flex items-center justify-between">
