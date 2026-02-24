@@ -27,6 +27,9 @@ export class DerivClient {
   private desiredTickSymbols = new Set<string>();
   private tickSubIdBySymbol = new Map<string, string>();
 
+  // ✅ prevent duplicate subscribe calls racing
+  private tickSubscribePromiseBySymbol = new Map<string, Promise<string | null>>();
+
   constructor(private token?: string, onMessage?: (msg: any) => void) {
     this.onMessageCallback = onMessage;
   }
@@ -447,23 +450,53 @@ export class DerivClient {
     return res;
   }
 
-  // ✅ subscribe to live ticks for a symbol
+  private isAlreadySubscribedError(e: unknown) {
+    const msg = String((e as any)?.message ?? e ?? "");
+    return /already subscribed/i.test(msg);
+  }
+
+  // ✅ subscribe to live ticks for a symbol (idempotent)
   async subscribeTicks(symbol: string) {
     const sym = String(symbol ?? "").trim();
     if (!sym) throw new Error("subscribeTicks: symbol required");
 
     this.desiredTickSymbols.add(sym);
 
-    if (!this.isOpen || !this.ws) await this.connect();
+    // If we already have a subscription id, don't re-subscribe
+    const existingId = this.tickSubIdBySymbol.get(sym);
+    if (existingId) return existingId;
 
-    const res = await this.sendWithRetry<any>(
-      { ticks: sym, subscribe: 1 },
-      { timeoutMs: 20_000, retries: 2, retryDelayMs: 600, safeToRetry: true },
-    );
+    // If a subscribe is already in flight for this symbol, await it
+    const inFlight = this.tickSubscribePromiseBySymbol.get(sym);
+    if (inFlight) return await inFlight;
 
-    const subId = String(res?.subscription?.id ?? "");
-    if (subId) this.tickSubIdBySymbol.set(sym, subId);
-    return subId || null;
+    const p = (async () => {
+      if (!this.isOpen || !this.ws) await this.connect();
+
+      try {
+        const res = await this.sendWithRetry<any>(
+          { ticks: sym, subscribe: 1 },
+          { timeoutMs: 20_000, retries: 2, retryDelayMs: 600, safeToRetry: true },
+        );
+
+        const subId = String(res?.subscription?.id ?? "");
+        if (subId) this.tickSubIdBySymbol.set(sym, subId);
+        return subId || null;
+      } catch (e) {
+        // Deriv returns an error if you subscribe twice; treat it as success.
+        if (this.isAlreadySubscribedError(e)) {
+          // Mark as subscribed (we may not know subId, but we also won't spam subscribe calls)
+          this.tickSubIdBySymbol.set(sym, this.tickSubIdBySymbol.get(sym) || "__subscribed__");
+          return this.tickSubIdBySymbol.get(sym) || null;
+        }
+        throw e;
+      } finally {
+        this.tickSubscribePromiseBySymbol.delete(sym);
+      }
+    })();
+
+    this.tickSubscribePromiseBySymbol.set(sym, p);
+    return await p;
   }
 
   // ✅ unsubscribe tick stream for a symbol
@@ -474,7 +507,10 @@ export class DerivClient {
     this.desiredTickSymbols.delete(sym);
 
     const subId = this.tickSubIdBySymbol.get(sym);
-    if (!subId) return;
+    if (!subId || subId === "__subscribed__") {
+      this.tickSubIdBySymbol.delete(sym);
+      return;
+    }
 
     if (this.isOpen && this.ws) {
       await this.sendWithRetry<any>(
