@@ -35,21 +35,21 @@ export class BotManager {
   private openCounts = new Map<string, number>();
 
   // ✅ minimum time between trades (per run/config)
-  // cfgKey (`userId::runId::cfgId`) -> epochMs
   private lastTradeAtByCfgKey = new Map<string, number>();
 
   // ✅ trade frequency limiter (rolling 60s window, per run/config)
-  // cfgKey (`userId::runId::cfgId`) -> sorted epochMs[]
   private tradeTimestamps60sByCfgKey = new Map<string, number[]>();
 
   // ✅ cooldown runtime state (per run/config)
-  // cfgKey (`userId::runId::cfgId`) -> epochMs
   private cooldownUntilByCfgKey = new Map<string, number>();
 
   // ✅ losing-streak protection runtime state (per run/config)
-  // cfgKey (`userId::runId::cfgId`) -> count / epochMs
   private consecutiveLossesByCfgKey = new Map<string, number>();
   private lossPauseUntilByCfgKey = new Map<string, number>();
+
+  // ✅ tick volatility filter state (per run/config): recent quotes
+  // cfgKey -> { quotes: number[] }
+  private recentTickQuotesByCfgKey = new Map<string, { quotes: number[] }>();
 
   // ✅ throttle reconciliation per account (kept as accountId-keyed for backward behavior)
   private lastReconcileAt = new Map<string, number>();
@@ -422,6 +422,14 @@ export class BotManager {
       }
       for (const k of Array.from(this.lossPauseUntilByCfgKey.keys())) {
         if (k.startsWith(prefix)) this.lossPauseUntilByCfgKey.delete(k);
+      }
+    }
+
+    // ✅ tick volatility filter buffers are keyed by run/config
+    {
+      const prefix = `${userId}::${runId}::`;
+      for (const k of Array.from(this.recentTickQuotesByCfgKey.keys())) {
+        if (k.startsWith(prefix)) this.recentTickQuotesByCfgKey.delete(k);
       }
     }
 
@@ -1011,6 +1019,125 @@ export class BotManager {
     }
   }
 
+  // ---- tick volatility filter helpers (runtime state) ----
+  private parseTickWindow(cfg: BotConfig): number {
+    const raw = (cfg?.params as any)?.tick_window;
+    const n = typeof raw === "number" ? raw : raw === "" || raw == null ? 0 : Number(raw);
+    // default 30 ticks, clamp 5..500
+    const v = Number.isFinite(n) && n > 0 ? Math.floor(n) : 30;
+    return Math.min(500, Math.max(5, v));
+  }
+
+  private parseTickRangeMin(cfg: BotConfig): number {
+    const raw = (cfg?.params as any)?.tick_range_min;
+    const n = typeof raw === "number" ? raw : raw === "" || raw == null ? 0 : Number(raw);
+    return Number.isFinite(n) ? Math.max(0, n) : 0;
+  }
+
+  private parseTickRangeMax(cfg: BotConfig): number {
+    const raw = (cfg?.params as any)?.tick_range_max;
+    const n = typeof raw === "number" ? raw : raw === "" || raw == null ? 0 : Number(raw);
+    return Number.isFinite(n) ? Math.max(0, n) : 0;
+  }
+
+  private pushTickQuote(cfgKey: string, quote: number, keepLastN: number) {
+    if (!Number.isFinite(quote)) return;
+
+    const st = this.recentTickQuotesByCfgKey.get(cfgKey) ?? { quotes: [] };
+    st.quotes.push(quote);
+
+    // Trim to keepLastN (plus a small cushion)
+    const MAX_KEEP = Math.min(600, Math.max(keepLastN, 50));
+    if (st.quotes.length > MAX_KEEP) st.quotes.splice(0, st.quotes.length - MAX_KEEP);
+
+    this.recentTickQuotesByCfgKey.set(cfgKey, st);
+  }
+
+  private getTickRangeGate(
+    cfgKey: string,
+    cfg: BotConfig,
+  ):
+    | { ok: true; range: number; window: number; min: number; max: number; quotesUsed: number }
+    | { ok: false; reason: "below_min" | "above_max"; range: number; window: number; min: number; max: number; quotesUsed: number } {
+    const window = this.parseTickWindow(cfg);
+    const min = this.parseTickRangeMin(cfg);
+    const max = this.parseTickRangeMax(cfg);
+
+    // if both disabled, gate is off
+    if (!(min > 0) && !(max > 0)) {
+      return { ok: true, range: 0, window, min, max, quotesUsed: 0 };
+    }
+
+    const st = this.recentTickQuotesByCfgKey.get(cfgKey);
+    const arr = st?.quotes ?? [];
+    if (arr.length < window) {
+      // Fail-open until we have enough ticks (do not block execution due to missing stream)
+      return { ok: true, range: 0, window, min, max, quotesUsed: arr.length };
+    }
+
+    const slice = arr.slice(-window);
+    let lo = Number.POSITIVE_INFINITY;
+    let hi = Number.NEGATIVE_INFINITY;
+    for (const q of slice) {
+      if (q < lo) lo = q;
+      if (q > hi) hi = q;
+    }
+
+    const range = Number.isFinite(hi) && Number.isFinite(lo) ? hi - lo : 0;
+
+    if (min > 0 && range < min) {
+      return { ok: false, reason: "below_min", range, window, min, max, quotesUsed: window };
+    }
+    if (max > 0 && range > max) {
+      return { ok: false, reason: "above_max", range, window, min, max, quotesUsed: window };
+    }
+
+    return { ok: true, range, window, min, max, quotesUsed: window };
+  }
+
+  private handleTickSafely(tick: any) {
+    // Defensive, non-intrusive tick handling (no cross-run side effects)
+    try {
+      if (!tick || typeof tick.epoch !== "number") return;
+
+      const symbol = String(tick.symbol ?? "").trim();
+      const quote = typeof tick.quote === "number" ? tick.quote : tick.quote ? Number(tick.quote) : undefined;
+      if (!symbol) return;
+      if (!Number.isFinite(quote)) return;
+
+      const now = Date.now();
+      const THROTTLE_MS = 2000;
+
+      for (const bot of this.runs.values()) {
+        // update tick buffers per matching enabled config (per run/config)
+        for (const cfg of bot.configs) {
+          if (!cfg.enabled) continue;
+          if (cfg.symbol !== symbol) continue;
+
+          const ck = this.cfgKey(bot, cfg);
+          const win = this.parseTickWindow(cfg);
+          this.pushTickQuote(ck, quote, win);
+        }
+
+        // keep existing throttled tick log behavior (only for users with matching symbol)
+        const matches = bot.configs.some((c) => c.enabled && c.symbol === symbol);
+        if (!matches) continue;
+
+        const k = `${bot.userId}::${symbol}`;
+        const last = this.lastTickLogAt.get(k) ?? 0;
+        if (now - last < THROTTLE_MS) continue;
+        this.lastTickLogAt.set(k, now);
+
+        this.wsLog(bot.userId, "tick", { symbol, epoch: Number(tick.epoch), quote });
+      }
+    } catch (e) {
+      console.error("tick error (final)", (e as any) && ((e as any).stack || (e as any).message || e));
+      try {
+        console.debug("tick payload (final):", JSON.stringify(tick));
+      } catch {}
+    }
+  }
+
   private async runConfig(bot: Running, cfg: BotConfig) {
     // Load account to get type + token
     const { data: acc, error: accErr } = await supabaseAdmin
@@ -1146,6 +1273,23 @@ export class BotManager {
     if (signal.confidence < 0.5) return;
 
     const ck = this.cfgKey(bot, cfg);
+
+    // ✅ tick volatility filter gate (execution only; does not block signal generation)
+    const tg = this.getTickRangeGate(ck, cfg);
+    if (!tg.ok) {
+      this.wsLog(bot.userId, "tick range filter (skipping execution)", {
+        runId: bot.runId,
+        cfg_id: cfg.id,
+        symbol: cfg.symbol,
+        reason: tg.reason,
+        tick_window: tg.window,
+        tick_range_min: tg.min,
+        tick_range_max: tg.max,
+        tick_range: tg.range,
+        quotes_used: tg.quotesUsed,
+      });
+      return;
+    }
 
     // ✅ cooldown gate (execution only; does not block signal generation)
     const cd = this.isInCooldown(ck);
@@ -1452,40 +1596,6 @@ export class BotManager {
     }
     this.wsLog(userId, "bot.configs.updated", { userId, runs_updated: updated });
     this.wsStatus(userId, this.getStatus(userId));
-  }
-
-  private handleTickSafely(tick: any) {
-    // Defensive, non-intrusive tick handling (no cross-run side effects)
-    try {
-      if (!tick || typeof tick.epoch !== "number") return;
-
-      const symbol = String(tick.symbol ?? "").trim();
-      const epoch = Number(tick.epoch);
-      const quote = typeof tick.quote === "number" ? tick.quote : tick.quote ? Number(tick.quote) : undefined;
-      if (!symbol) return;
-
-      // ✅ DO NOT broadcast tick logs (avoid cross-user leakage + log spam).
-      // Only log to users who have an enabled config matching this symbol.
-      const now = Date.now();
-      const THROTTLE_MS = 2000;
-
-      for (const bot of this.runs.values()) {
-        const matches = bot.configs.some((c) => c.enabled && c.symbol === symbol);
-        if (!matches) continue;
-
-        const k = `${bot.userId}::${symbol}`;
-        const last = this.lastTickLogAt.get(k) ?? 0;
-        if (now - last < THROTTLE_MS) continue;
-        this.lastTickLogAt.set(k, now);
-
-        this.wsLog(bot.userId, "tick", { symbol, epoch, quote });
-      }
-    } catch (e) {
-      console.error("tick error (final)", (e as any) && ((e as any).stack || (e as any).message || e));
-      try {
-        console.debug("tick payload (final):", JSON.stringify(tick));
-      } catch {}
-    }
   }
 }
 

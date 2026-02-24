@@ -41,6 +41,15 @@ type StrategyParams = {
   /** Max trades allowed within a rolling 60-second window. 0 disables. */
   max_trades_per_minute?: number;
 
+  /** Tick volatility filter: compute range over last N ticks (defaults server-side). */
+  tick_window?: number;
+
+  /** Tick volatility filter: skip if range < this. 0 disables min gate. */
+  tick_range_min?: number;
+
+  /** Tick volatility filter: skip if range > this. 0 disables max gate. */
+  tick_range_max?: number;
+
   /** Pause execution for N seconds after a losing trade (0 disables) */
   cooldown_after_loss?: number;
 
@@ -198,9 +207,12 @@ export default function BotCenter() {
     max_open_trades: 5,
 
     min_seconds_between_trades: 0,
-
-    // ✅ NEW (trade frequency limiter)
     max_trades_per_minute: 0,
+
+    // ✅ NEW (tick volatility filter)
+    tick_window: 30,
+    tick_range_min: 0,
+    tick_range_max: 0,
 
     cooldown_after_loss: 0,
 
@@ -394,9 +406,12 @@ export default function BotCenter() {
             "duration_unit",
             "max_open_trades",
             "min_seconds_between_trades",
+            "max_trades_per_minute",
 
             // ✅ NEW
-            "max_trades_per_minute",
+            "tick_window",
+            "tick_range_min",
+            "tick_range_max",
 
             "cooldown_after_loss",
             "max_consecutive_losses",
@@ -416,11 +431,15 @@ export default function BotCenter() {
               Math.floor(Number(b.params?.min_seconds_between_trades ?? 0) || 0),
             ),
 
-            // ✅ NEW (clamp 0..600)
             max_trades_per_minute: Math.min(
               600,
               Math.max(0, Math.floor(Number(b.params?.max_trades_per_minute ?? 0) || 0)),
             ),
+
+            // ✅ NEW (clamp window 5..500, ranges >= 0)
+            tick_window: Math.min(500, Math.max(5, Math.floor(Number(b.params?.tick_window ?? 30) || 30))),
+            tick_range_min: Math.max(0, Number(b.params?.tick_range_min ?? 0) || 0),
+            tick_range_max: Math.max(0, Number(b.params?.tick_range_max ?? 0) || 0),
 
             cooldown_after_loss: Math.max(0, Math.floor(Number(b.params?.cooldown_after_loss ?? 0) || 0)),
             max_consecutive_losses: Math.max(0, Math.floor(Number(b.params?.max_consecutive_losses ?? 0) || 0)),
@@ -587,9 +606,12 @@ export default function BotCenter() {
         max_open_trades: p.max_open_trades ?? 5,
 
         min_seconds_between_trades: Math.max(0, Math.floor(Number(p.min_seconds_between_trades ?? 0) || 0)),
-
-        // ✅ NEW (clamp 0..600)
         max_trades_per_minute: Math.min(600, Math.max(0, Math.floor(Number(p.max_trades_per_minute ?? 0) || 0))),
+
+        // ✅ NEW
+        tick_window: Math.min(500, Math.max(5, Math.floor(Number(p.tick_window ?? 30) || 30))),
+        tick_range_min: Math.max(0, Number(p.tick_range_min ?? 0) || 0),
+        tick_range_max: Math.max(0, Number(p.tick_range_max ?? 0) || 0),
 
         cooldown_after_loss: Math.max(0, Math.floor(Number(p.cooldown_after_loss ?? 0) || 0)),
         max_consecutive_losses: Math.max(0, Math.floor(Number(p.max_consecutive_losses ?? 0) || 0)),
@@ -607,9 +629,12 @@ export default function BotCenter() {
           .concat([
             "max_open_trades",
             "min_seconds_between_trades",
+            "max_trades_per_minute",
 
             // ✅ NEW
-            "max_trades_per_minute",
+            "tick_window",
+            "tick_range_min",
+            "tick_range_max",
 
             "cooldown_after_loss",
             "max_consecutive_losses",
@@ -1333,12 +1358,24 @@ function StrategySettingsModal({
         Math.floor(mt ?? (Number(params.min_seconds_between_trades ?? 0) || 0)),
       );
 
-      // ✅ NEW: max_trades_per_minute (clamp 0..600)
       const tpm = parseNum(next.max_trades_per_minute);
       next.max_trades_per_minute = Math.min(
         600,
         Math.max(0, Math.floor(tpm ?? (Number(params.max_trades_per_minute ?? 0) || 0))),
       );
+
+      // ✅ NEW: tick volatility filter
+      const tw = parseNum(next.tick_window);
+      next.tick_window = Math.min(
+        500,
+        Math.max(5, Math.floor(tw ?? (Number(params.tick_window ?? 30) || 30))),
+      );
+
+      const trMin = parseNum(next.tick_range_min);
+      next.tick_range_min = Math.max(0, trMin ?? (Number(params.tick_range_min ?? 0) || 0));
+
+      const trMax = parseNum(next.tick_range_max);
+      next.tick_range_max = Math.max(0, trMax ?? (Number(params.tick_range_max ?? 0) || 0));
 
       const cd = parseNum(next.cooldown_after_loss);
       next.cooldown_after_loss = Math.max(0, Math.floor(cd ?? (Number(params.cooldown_after_loss ?? 0) || 0)));
