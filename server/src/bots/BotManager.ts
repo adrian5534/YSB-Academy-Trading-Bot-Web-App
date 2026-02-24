@@ -34,6 +34,10 @@ export class BotManager {
   private derivClients = new Map<string, DerivClient>();
   private openCounts = new Map<string, number>();
 
+  // ✅ minimum time between trades (per run/config)
+  // cfgKey (`userId::runId::cfgId`) -> epochMs
+  private lastTradeAtByCfgKey = new Map<string, number>();
+
   // ✅ cooldown runtime state (per run/config)
   // cfgKey (`userId::runId::cfgId`) -> epochMs
   private cooldownUntilByCfgKey = new Map<string, number>();
@@ -126,6 +130,40 @@ export class BotManager {
     });
   }
 
+  // ---- min time between trades helpers (runtime state) ----
+  private parseMinSecondsBetweenTrades(cfg: BotConfig): number {
+    const raw = (cfg?.params as any)?.min_seconds_between_trades;
+    const n = typeof raw === "number" ? raw : raw === "" || raw == null ? 0 : Number(raw);
+    if (!Number.isFinite(n)) return 0;
+    // Clamp to sane bounds (0..24h)
+    return Math.min(86_400, Math.max(0, Math.floor(n)));
+  }
+
+  private getLastTradeAt(cfgKey: string): number {
+    return this.lastTradeAtByCfgKey.get(cfgKey) ?? 0;
+  }
+
+  private markTradeExecuted(cfgKey: string) {
+    this.lastTradeAtByCfgKey.set(cfgKey, Date.now());
+  }
+
+  private isMinTradeIntervalActive(
+    cfgKey: string,
+    cfg: BotConfig,
+  ): { active: boolean; remainingMs: number; seconds: number } {
+    const seconds = this.parseMinSecondsBetweenTrades(cfg);
+    if (!seconds) return { active: false, remainingMs: 0, seconds: 0 };
+
+    const last = this.getLastTradeAt(cfgKey);
+    if (!last) return { active: false, remainingMs: 0, seconds };
+
+    const now = Date.now();
+    const until = last + seconds * 1000;
+
+    if (until > now) return { active: true, remainingMs: until - now, seconds };
+    return { active: false, remainingMs: 0, seconds };
+  }
+
   private getOpenCount(bot: Running, cfg: BotConfig) {
     return this.openCounts.get(this.cfgKey(bot, cfg)) ?? 0;
   }
@@ -173,6 +211,14 @@ export class BotManager {
 
     // cooldown state is keyed by run/config
     this.clearRunCooldownState(userId, runId);
+
+    // ✅ min-time-between-trades state is keyed by run/config
+    {
+      const prefix = `${userId}::${runId}::`;
+      for (const k of Array.from(this.lastTradeAtByCfgKey.keys())) {
+        if (k.startsWith(prefix)) this.lastTradeAtByCfgKey.delete(k);
+      }
+    }
 
     // clean tradeId -> cfgKey mappings (cfgKey includes runId)
     const cfgPrefix = `${userId}::${runId}::`;
@@ -885,6 +931,20 @@ export class BotManager {
       return;
     }
 
+    // ✅ min time between trades gate (execution only; does not block signal generation)
+    const mt = this.isMinTradeIntervalActive(ck, cfg);
+    if (mt.active) {
+      this.wsLog(bot.userId, "min-trade-interval active (skipping execution)", {
+        runId: bot.runId,
+        cfg_id: cfg.id,
+        symbol: cfg.symbol,
+        remaining_sec: Math.ceil(mt.remainingMs / 1000),
+        min_seconds_between_trades: mt.seconds,
+        lastTradeAt: new Date(this.getLastTradeAt(ck)).toISOString(),
+      });
+      return;
+    }
+
     // Enforce per-bot max open trades
     const maxOpenTrades = Math.max(1, Number(cfg.params?.max_open_trades ?? 5));
     const currentOpen = this.getOpenCount(bot, cfg);
@@ -913,6 +973,9 @@ export class BotManager {
       this.incOpen(bot, cfg);
       try {
         const { profit } = await this.paperTrade(bot.userId, cfg, signal, stake);
+
+        // ✅ mark trade executed (for min time between trades)
+        this.markTradeExecuted(ck);
 
         // ✅ if losing paper trade => cooldown
         this.maybeCooldownAfterLoss({
@@ -943,6 +1006,9 @@ export class BotManager {
           duration_unit: durUnit,
           currency: "USD",
         });
+
+        // ✅ mark trade executed as soon as buy succeeds (even if DB insert later fails)
+        this.markTradeExecuted(ck);
 
         // Insert opened live trade
         const buy = res?.buy || res;

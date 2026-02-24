@@ -35,6 +35,9 @@ type StrategyParams = {
   duration_unit: DurationUnit;
   max_open_trades: number;
 
+  /** Minimum time between trade executions (seconds). 0 disables. */
+  min_seconds_between_trades?: number;
+
   /** Pause execution for N seconds after a losing trade (0 disables) */
   cooldown_after_loss?: number;
 
@@ -186,6 +189,8 @@ export default function BotCenter() {
     max_open_trades: 5,
 
     // ✅ NEW
+    min_seconds_between_trades: 0,
+
     cooldown_after_loss: 0,
 
     early_sell_enabled: false,
@@ -374,7 +379,8 @@ export default function BotCenter() {
             "duration",
             "duration_unit",
             "max_open_trades",
-            "cooldown_after_loss", // ✅ NEW
+            "min_seconds_between_trades", // ✅ NEW
+            "cooldown_after_loss",
             "early_sell_enabled",
             "early_sell_profit",
           ]);
@@ -386,6 +392,11 @@ export default function BotCenter() {
             max_open_trades: Number(b.params?.max_open_trades ?? 5),
 
             // ✅ NEW
+            min_seconds_between_trades: Math.max(
+              0,
+              Math.floor(Number(b.params?.min_seconds_between_trades ?? 0) || 0),
+            ),
+
             cooldown_after_loss: Math.max(0, Math.floor(Number(b.params?.cooldown_after_loss ?? 0) || 0)),
 
             early_sell_enabled: Boolean(b.params?.early_sell_enabled ?? false),
@@ -550,6 +561,8 @@ export default function BotCenter() {
         max_open_trades: p.max_open_trades ?? 5,
 
         // ✅ NEW
+        min_seconds_between_trades: Math.max(0, Math.floor(Number(p.min_seconds_between_trades ?? 0) || 0)),
+
         cooldown_after_loss: Math.max(0, Math.floor(Number(p.cooldown_after_loss ?? 0) || 0)),
 
         early_sell_enabled: Boolean(p.early_sell_enabled ?? false),
@@ -564,7 +577,8 @@ export default function BotCenter() {
           .concat(EXECUTION_FIELDS.map((f) => f.key))
           .concat([
             "max_open_trades",
-            "cooldown_after_loss", // ✅ NEW
+            "min_seconds_between_trades", // ✅ NEW
+            "cooldown_after_loss",
             "early_sell_enabled",
             "early_sell_profit",
           ]),
@@ -1278,12 +1292,16 @@ function StrategySettingsModal({
       const mot = parseNum(next.max_open_trades);
       next.max_open_trades = Math.max(1, mot ?? Number(params.max_open_trades ?? 5));
 
-      // ✅ NEW: cooldown_after_loss (seconds)
-      const cd = parseNum(next.cooldown_after_loss);
-      next.cooldown_after_loss = Math.max(
+      // ✅ NEW: min_seconds_between_trades (seconds)
+      const mt = parseNum(next.min_seconds_between_trades);
+      next.min_seconds_between_trades = Math.max(
         0,
-        Math.floor(cd ?? (Number(params.cooldown_after_loss ?? 0) || 0)),
+        Math.floor(mt ?? (Number(params.min_seconds_between_trades ?? 0) || 0)),
       );
+
+      // cooldown_after_loss (seconds)
+      const cd = parseNum(next.cooldown_after_loss);
+      next.cooldown_after_loss = Math.max(0, Math.floor(cd ?? (Number(params.cooldown_after_loss ?? 0) || 0)));
     }
 
     // early sell
@@ -1468,6 +1486,23 @@ function StrategySettingsModal({
               </div>
 
               {/* ✅ NEW */}
+              <div>
+                <label className="block text-sm mb-1">Min time between trades (sec)</label>
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  min={0}
+                  step={1}
+                  className="w-full rounded-lg border border-border bg-background px-3 py-2"
+                  value={form.min_seconds_between_trades ?? ""}
+                  onChange={(e) => setForm({ ...form, min_seconds_between_trades: e.target.value })}
+                />
+                <div className="mt-1 text-xs text-muted-foreground">
+                  Prevents new trade execution until this many seconds have passed since the last executed trade. Set to 0
+                  to disable.
+                </div>
+              </div>
+
               <div>
                 <label className="block text-sm mb-1">Cooldown after loss (sec)</label>
                 <input
