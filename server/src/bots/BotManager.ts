@@ -634,10 +634,22 @@ export class BotManager {
       configs: configs.map((c) => ({
         ...c,
         id: uuidv4(),
-        enabled: c.enabled ?? true, // default on
+        enabled: c.enabled ?? true,
       })),
     };
     this.runs.set(key, bot);
+
+    // ✅ immediate best-effort reconcile on start (cleans previously-stuck opens)
+    {
+      const liveAccountIds = Array.from(
+        new Set(bot.configs.filter((c) => c.enabled && c.mode === "live").map((c) => c.account_id)),
+      );
+      for (const accountId of liveAccountIds) {
+        void this.reconcileAccountLiveTrades(userId, accountId, { force: true }).catch((e) =>
+          this.wsLog(userId, "reconcile (start) failed", { accountId, error: String(e) }),
+        );
+      }
+    }
 
     this.wsLog(userId, "bot.configs", { userId, runId, name, configs: bot.configs });
     bot.timer = setInterval(() => {
@@ -1061,6 +1073,24 @@ export class BotManager {
   private async tick(bot: Running) {
     bot.heartbeat_at = new Date().toISOString();
     this.wsStatus(bot.userId, this.getStatus(bot.userId));
+
+    // ✅ periodically reconcile live trades (closes stuck open rows after restarts/timeouts)
+    {
+      const liveAccountIds = Array.from(
+        new Set(
+          bot.configs
+            .filter((c) => c.enabled && c.mode === "live")
+            .map((c) => c.account_id)
+            .filter(Boolean),
+        ),
+      );
+
+      for (const accountId of liveAccountIds) {
+        void this.reconcileAccountLiveTrades(bot.userId, accountId).catch((e) =>
+          this.wsLog(bot.userId, "reconcile (tick) failed", { accountId, error: String(e) }),
+        );
+      }
+    }
 
     for (const cfg of bot.configs.filter((c) => c.enabled)) {
       try {
@@ -2106,10 +2136,12 @@ export class BotManager {
     this.wsLog(userId, "bot.configs.updated", { userId, runs_updated: updated });
     this.wsStatus(userId, this.getStatus(userId));
 
-    // ✅ after config changes, resync subscriptions for involved accounts
     const accountIds = Array.from(new Set(configs.map((c) => c.account_id)));
     for (const accountId of accountIds) {
       await this.syncAccountTickSubscriptions(accountId).catch(() => void 0);
+
+      // ✅ schedule a forced reconcile after config change (best-effort)
+      this.scheduleReconcileSoon(userId, accountId, 500);
     }
   }
 }
