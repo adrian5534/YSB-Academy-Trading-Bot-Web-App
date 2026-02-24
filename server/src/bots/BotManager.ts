@@ -34,6 +34,10 @@ export class BotManager {
   private derivClients = new Map<string, DerivClient>();
   private openCounts = new Map<string, number>();
 
+  // ✅ cooldown runtime state (per run/config)
+  // cfgKey (`userId::runId::cfgId`) -> epochMs
+  private cooldownUntilByCfgKey = new Map<string, number>();
+
   // ✅ throttle reconciliation per account (kept as accountId-keyed for backward behavior)
   private lastReconcileAt = new Map<string, number>();
 
@@ -63,6 +67,65 @@ export class BotManager {
     return `${bot.userId}::${bot.runId}::${cfg.id}`;
   }
 
+  // ---- cooldown helpers (runtime state) ----
+  private parseCooldownAfterLossSec(cfg: BotConfig): number {
+    const raw = (cfg?.params as any)?.cooldown_after_loss;
+    const n = typeof raw === "number" ? raw : raw === "" || raw == null ? 0 : Number(raw);
+    if (!Number.isFinite(n)) return 0;
+    // Clamp to sane bounds (0..24h)
+    return Math.min(86_400, Math.max(0, Math.floor(n)));
+  }
+
+  private getCooldownUntil(cfgKey: string): number {
+    return this.cooldownUntilByCfgKey.get(cfgKey) ?? 0;
+  }
+
+  private isInCooldown(cfgKey: string): { active: boolean; remainingMs: number } {
+    const until = this.getCooldownUntil(cfgKey);
+    const now = Date.now();
+    if (until > now) return { active: true, remainingMs: until - now };
+    return { active: false, remainingMs: 0 };
+  }
+
+  private startCooldown(cfgKey: string, seconds: number) {
+    const sec = Math.max(0, Math.floor(seconds));
+    if (!sec) return;
+
+    const now = Date.now();
+    const nextUntil = now + sec * 1000;
+
+    // If already in cooldown, extend to the later timestamp
+    const prev = this.cooldownUntilByCfgKey.get(cfgKey) ?? 0;
+    this.cooldownUntilByCfgKey.set(cfgKey, Math.max(prev, nextUntil));
+  }
+
+  private maybeCooldownAfterLoss(opts: {
+    userId: string;
+    cfgKey: string;
+    cfg?: BotConfig;
+    profit: number;
+    reason: string;
+    meta?: Record<string, unknown>;
+  }) {
+    const { userId, cfgKey, cfg, profit, reason, meta } = opts;
+
+    if (!Number.isFinite(profit) || profit >= 0) return;
+
+    const seconds = cfg ? this.parseCooldownAfterLossSec(cfg) : 0;
+    if (!seconds) return;
+
+    this.startCooldown(cfgKey, seconds);
+
+    const until = this.getCooldownUntil(cfgKey);
+    this.wsLog(userId, "cooldown_after_loss started", {
+      ...meta,
+      reason,
+      profit,
+      cooldown_after_loss: seconds,
+      cooldownUntil: new Date(until).toISOString(),
+    });
+  }
+
   private getOpenCount(bot: Running, cfg: BotConfig) {
     return this.openCounts.get(this.cfgKey(bot, cfg)) ?? 0;
   }
@@ -86,6 +149,13 @@ export class BotManager {
     }
   }
 
+  private clearRunCooldownState(userId: string, runId: string) {
+    const prefix = `${userId}::${runId}::`;
+    for (const k of Array.from(this.cooldownUntilByCfgKey.keys())) {
+      if (k.startsWith(prefix)) this.cooldownUntilByCfgKey.delete(k);
+    }
+  }
+
   private clearRunReconcileTimers(bot: Running) {
     const accountIds = Array.from(new Set(bot.configs.map((c) => c.account_id)));
     for (const accountId of accountIds) {
@@ -100,6 +170,9 @@ export class BotManager {
   private clearRunEphemeralState(userId: string, runId: string) {
     // open trade counters are keyed by run
     this.clearRunOpenCounts(userId, runId);
+
+    // cooldown state is keyed by run/config
+    this.clearRunCooldownState(userId, runId);
 
     // clean tradeId -> cfgKey mappings (cfgKey includes runId)
     const cfgPrefix = `${userId}::${runId}::`;
@@ -159,25 +232,17 @@ export class BotManager {
     const hub: any = this.hub as any;
     const safeMeta = { ...(meta ?? {}), user_id: userId };
 
-    // Prefer a scoped signature if the hub supports it.
-    // Supported patterns (we try both for compatibility):
-    //   hub.log(message, meta, userId)
-    //   hub.log(userId, message, meta)
     try {
       if (typeof hub?.log === "function") {
         try {
           hub.log(message, safeMeta, userId);
           return;
-        } catch {
-          // ignore, try alt signature below
-        }
+        } catch {}
         try {
           hub.log(userId, message, safeMeta);
           return;
-        } catch {
-          // ignore, fallback below
-        }
-        hub.log(message, safeMeta); // fallback (may broadcast if hub is not fixed yet)
+        } catch {}
+        hub.log(message, safeMeta);
       }
     } catch {
       // ignore
@@ -188,7 +253,6 @@ export class BotManager {
     const hub: any = this.hub as any;
     try {
       if (typeof hub?.status === "function") {
-        // Try scoped form first, then fallback.
         try {
           hub.status(payload, userId);
           return;
@@ -205,7 +269,6 @@ export class BotManager {
     const hub: any = this.hub as any;
     try {
       if (typeof hub?.trade === "function") {
-        // Try scoped form first, then fallback.
         try {
           hub.trade(trade, userId);
           return;
@@ -347,13 +410,11 @@ export class BotManager {
   private async reconcileAccountLiveTrades(userId: string, accountId: string, opts?: { force?: boolean }) {
     const ak = this.accountKey(userId, accountId);
 
-    // ✅ in-flight guard (prevents overlapping reconcile bursts)
     if (this.reconcileInFlight.has(ak)) return;
 
     const now = Date.now();
     const last = this.lastReconcileAt.get(accountId) ?? 0;
 
-    // ✅ adaptive throttle: faster only when early-sell is relevant
     const hasEarly = this.hasEarlySellOpenByAccount.get(ak) ?? false;
     const armedCount = this.armedCountByAccount.get(ak) ?? 0;
 
@@ -367,7 +428,6 @@ export class BotManager {
       if (now - last < throttleMs) return;
     }
 
-    // record last reconcile (even for forced runs) to keep behavior stable
     this.lastReconcileAt.set(accountId, now);
 
     this.reconcileInFlight.add(ak);
@@ -396,7 +456,6 @@ export class BotManager {
       if (error) throw error;
 
       if (!openTrades?.length) {
-        // no open trades => clear account-level flags and timers
         this.hasEarlySellOpenByAccount.delete(ak);
         const timer = this.reconcileTimers.get(ak);
         if (timer) clearTimeout(timer);
@@ -411,17 +470,13 @@ export class BotManager {
 
       const canResell = (s: any) => s?.is_valid_to_sell === 1 || s?.is_valid_to_sell === true;
 
-      // ✅ update “hasEarly” for next throttle decision (based on DB only; cheap)
       const anyEarlyEnabled = (openTrades as any[]).some(
         (tr) => Boolean(tr?.meta?.early_sell_enabled) && toNum(tr?.meta?.early_sell_profit, 0) > 0,
       );
       this.hasEarlySellOpenByAccount.set(ak, anyEarlyEnabled);
 
-      // ✅ cap Deriv openContract calls per pass
-      // (keeps API usage bounded even when polling more frequently)
       const MAX_CHECK = armedCount > 0 ? 15 : anyEarlyEnabled ? 12 : 8;
 
-      // ✅ prioritize armed contracts first, then early-enabled, then the rest
       const scored = (openTrades as any[]).map((tr) => {
         const cid = Number(tr?.meta?.contract_id ?? 0);
         const st = cid ? this.earlySellState.get(cid) : undefined;
@@ -441,19 +496,17 @@ export class BotManager {
         const contractId = it.cid;
         if (!contractId) continue;
 
-        // map contract -> account for correct armed counts / cleanup
         this.contractToAccountKey.set(contractId, ak);
 
         let snap: any = null;
         try {
           snap = await deriv.openContract(contractId);
         } catch {
-          continue; // transient; leave open
+          continue;
         } finally {
           checked++;
         }
 
-        // If already settled, close in DB (existing behavior)
         if (snap?.is_sold) {
           this.deleteEarlySellState(contractId);
 
@@ -462,6 +515,10 @@ export class BotManager {
           const profit = Number.isFinite(sellPrice) && Number.isFinite(buyPrice) ? sellPrice - buyPrice : 0;
           const closedAt =
             snap?.sell_time ? new Date(Number(snap.sell_time) * 1000).toISOString() : new Date().toISOString();
+
+          // try to attribute cooldown to the originating cfg (best-effort)
+          const tradeIdStr = String(tr.id);
+          const cfgKey = this.tradeToCfgKey.get(tradeIdStr);
 
           try {
             const { data: updated } = await supabaseAdmin
@@ -472,7 +529,21 @@ export class BotManager {
               .single();
 
             if (updated) this.wsTrade(userId, updated);
-            this.releaseOpenOnceByTradeId(String(tr.id));
+
+            if (cfgKey) {
+              // only cool down execution for the cfg that placed the trade (per run/config)
+              const botAndCfg = this.findBotAndCfgByCfgKey(cfgKey);
+              this.maybeCooldownAfterLoss({
+                userId,
+                cfgKey,
+                cfg: botAndCfg?.cfg,
+                profit,
+                reason: "reconcile:settled_loss",
+                meta: { tradeId: tr.id, contractId, accountId },
+              });
+            }
+
+            this.releaseOpenOnceByTradeId(tradeIdStr);
             this.wsLog(userId, "reconciled live trade closed", { tradeId: tr.id, contractId, sellPrice, profit });
           } catch (e) {
             this.wsLog(userId, "reconcile: db update failed", { tradeId: tr.id, error: String(e) });
@@ -480,11 +551,9 @@ export class BotManager {
           continue;
         }
 
-        // Early-sell logic (only if enabled)
         const earlyEnabled = Boolean(tr?.meta?.early_sell_enabled ?? false);
         const earlySellProfit = earlyEnabled ? toNum(tr?.meta?.early_sell_profit ?? 0, 0) : 0;
 
-        // If disabled, ensure latch state is cleared
         if (!earlyEnabled || earlySellProfit <= 0) {
           this.deleteEarlySellState(contractId);
           continue;
@@ -492,7 +561,6 @@ export class BotManager {
 
         const profitNow = toNum(snap?.profit ?? 0, 0);
 
-        // Arm once profit first reaches threshold (even if not sellable yet)
         const st =
           this.earlySellState.get(contractId) ?? {
             armed: false,
@@ -516,14 +584,11 @@ export class BotManager {
             threshold: earlySellProfit,
           });
 
-          // ✅ when armed, schedule a fast follow-up reconcile for this account
           this.scheduleReconcileSoon(userId, accountId, 1500);
         }
 
         this.earlySellState.set(contractId, st);
 
-        // ✅ Safety: once armed, only sell if sellable AND profit is non-negative
-        // This avoids “armed at +X, sell later at -Y”.
         const minProfitToSell = 0;
 
         if (st.armed && canResell(snap) && profitNow >= minProfitToSell) {
@@ -539,6 +604,9 @@ export class BotManager {
               const closedAt =
                 snap2?.sell_time ? new Date(Number(snap2.sell_time) * 1000).toISOString() : new Date().toISOString();
 
+              const tradeIdStr = String(tr.id);
+              const cfgKey = this.tradeToCfgKey.get(tradeIdStr);
+
               const { data: updated } = await supabaseAdmin
                 .from("trades")
                 .update({
@@ -552,7 +620,20 @@ export class BotManager {
                 .single();
 
               if (updated) this.wsTrade(userId, updated);
-              this.releaseOpenOnceByTradeId(String(tr.id));
+
+              if (cfgKey) {
+                const botAndCfg = this.findBotAndCfgByCfgKey(cfgKey);
+                this.maybeCooldownAfterLoss({
+                  userId,
+                  cfgKey,
+                  cfg: botAndCfg?.cfg,
+                  profit,
+                  reason: "reconcile:early_sell_loss",
+                  meta: { tradeId: tr.id, contractId, accountId, early_sold: true },
+                });
+              }
+
+              this.releaseOpenOnceByTradeId(tradeIdStr);
 
               this.wsLog(userId, "early sell executed", {
                 tradeId: tr.id,
@@ -571,24 +652,40 @@ export class BotManager {
                 threshold: earlySellProfit,
               });
 
-              // still armed -> try again soon, but bounded by in-flight/timer logic
               this.scheduleReconcileSoon(userId, accountId, 1500);
             }
           } catch (e) {
             this.wsLog(userId, "early sell failed", { tradeId: tr.id, contractId, error: String(e) });
-            // keep armed; retry soon
             this.scheduleReconcileSoon(userId, accountId, 1500);
           }
         }
       }
 
-      // If anything is still armed for this account, keep the fast loop alive
       if ((this.armedCountByAccount.get(ak) ?? 0) > 0) {
         this.scheduleReconcileSoon(userId, accountId, 1500);
       }
     } finally {
       this.reconcileInFlight.delete(ak);
     }
+  }
+
+  // ✅ resolve cfgKey -> actual cfg (for cooldown config lookup)
+  private findBotAndCfgByCfgKey(cfgKey: string): { bot: Running; cfg: BotConfig } | null {
+    // cfgKey format: `${userId}::${runId}::${cfgId}`
+    const parts = String(cfgKey ?? "").split("::");
+    if (parts.length < 3) return null;
+
+    const userId = parts[0];
+    const runId = parts[1];
+    const cfgId = parts.slice(2).join("::");
+
+    const bot = this.runs.get(this.runKey(userId, runId));
+    if (!bot) return null;
+
+    const cfg = bot.configs.find((c) => c.id === cfgId);
+    if (!cfg) return null;
+
+    return { bot, cfg };
   }
 
   private async getDerivClient(accountId: string, token: string) {
@@ -774,6 +871,20 @@ export class BotManager {
     if (!signal.side) return;
     if (signal.confidence < 0.5) return;
 
+    // ✅ cooldown gate (execution only; does not block signal generation)
+    const ck = this.cfgKey(bot, cfg);
+    const cd = this.isInCooldown(ck);
+    if (cd.active) {
+      this.wsLog(bot.userId, "cooldown active (skipping execution)", {
+        runId: bot.runId,
+        cfg_id: cfg.id,
+        symbol: cfg.symbol,
+        remaining_sec: Math.ceil(cd.remainingMs / 1000),
+        cooldownUntil: new Date(this.getCooldownUntil(ck)).toISOString(),
+      });
+      return;
+    }
+
     // Enforce per-bot max open trades
     const maxOpenTrades = Math.max(1, Number(cfg.params?.max_open_trades ?? 5));
     const currentOpen = this.getOpenCount(bot, cfg);
@@ -799,11 +910,19 @@ export class BotManager {
     const stake = computeStake(rules, 1000);
 
     if (cfg.mode === "paper") {
-      // Paper trades in this implementation close immediately; we still bump the counter
-      // for consistency and release right after persisting.
       this.incOpen(bot, cfg);
       try {
-        await this.paperTrade(bot.userId, cfg, signal, stake);
+        const { profit } = await this.paperTrade(bot.userId, cfg, signal, stake);
+
+        // ✅ if losing paper trade => cooldown
+        this.maybeCooldownAfterLoss({
+          userId: bot.userId,
+          cfgKey: ck,
+          cfg,
+          profit,
+          reason: "paper_trade_loss",
+          meta: { runId: bot.runId, cfg_id: cfg.id, symbol: cfg.symbol, timeframe: cfg.timeframe, strategy_id: cfg.strategy_id },
+        });
       } finally {
         this.decOpen(bot, cfg);
       }
@@ -852,8 +971,6 @@ export class BotManager {
               stake: stakeParam,
               duration: dur,
               duration_unit: durUnit,
-
-              // ✅ persist both; profit only applies when enabled
               early_sell_enabled: earlyEnabled,
               early_sell_profit: earlyEnabled ? earlyProfit : 0,
             },
@@ -863,8 +980,8 @@ export class BotManager {
 
         if (insert.data) {
           this.wsTrade(bot.userId, insert.data);
-          // track mapping so reconciliation / early sell can release the in-memory counter safely
-          this.tradeToCfgKey.set(String(insert.data.id), this.cfgKey(bot, cfg));
+          // ✅ map trade -> cfgKey so reconciliation/loss cooldown is per run/config
+          this.tradeToCfgKey.set(String(insert.data.id), ck);
         }
 
         // Finalize after expiry
@@ -893,7 +1010,9 @@ export class BotManager {
             const sellPrice = Number(snap?.sell_price ?? snap?.bid_price ?? 0);
             const profit = Number.isFinite(sellPrice) && Number.isFinite(buyPrice) ? sellPrice - buyPrice : 0;
             const closedAt =
-              snap?.is_sold && snap?.sell_time ? new Date(Number(snap.sell_time) * 1000).toISOString() : new Date().toISOString();
+              snap?.is_sold && snap?.sell_time
+                ? new Date(Number(snap.sell_time) * 1000).toISOString()
+                : new Date().toISOString();
 
             if (tradeId) {
               const { data: updated } = await supabaseAdmin
@@ -904,6 +1023,16 @@ export class BotManager {
                 .single();
               if (updated) this.wsTrade(bot.userId, updated);
             }
+
+            // ✅ if losing live trade => cooldown (per cfg)
+            this.maybeCooldownAfterLoss({
+              userId: bot.userId,
+              cfgKey: ck,
+              cfg,
+              profit,
+              reason: "live_finalize_loss",
+              meta: { runId: bot.runId, tradeId, contractId, symbol: cfg.symbol },
+            });
           } catch (e) {
             this.wsLog(bot.userId, "live finalize error", { error: String(e) });
           } finally {
@@ -918,7 +1047,7 @@ export class BotManager {
     }
   }
 
-  private async paperTrade(userId: string, cfg: BotConfig, signal: any, stake: number) {
+  private async paperTrade(userId: string, cfg: BotConfig, signal: any, stake: number): Promise<{ profit: number; trade: any }> {
     const entry = signal.entry ?? 0;
     const sl = signal.sl ?? null;
     const tp = signal.tp ?? null;
@@ -927,7 +1056,6 @@ export class BotManager {
     const slippage = entry * 0.0001 * (Math.random() - 0.5);
     const fill = entry + (signal.side === "buy" ? spread : -spread) + slippage;
 
-    // crude close after a random outcome near RR
     const win = Math.random() < 0.52;
     let exit = fill;
     if (win && tp != null) exit = tp;
@@ -959,6 +1087,8 @@ export class BotManager {
     if (error) throw error;
     this.wsTrade(userId, data);
     this.wsLog(userId, "paper trade", { symbol: cfg.symbol, side: signal.side, profit });
+
+    return { profit, trade: data };
   }
 
   // Replace running configs for a user and apply immediately

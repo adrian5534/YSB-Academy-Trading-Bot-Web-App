@@ -35,6 +35,9 @@ type StrategyParams = {
   duration_unit: DurationUnit;
   max_open_trades: number;
 
+  /** Pause execution for N seconds after a losing trade (0 disables) */
+  cooldown_after_loss?: number;
+
   /** Enable/disable early sell without destroying the threshold value */
   early_sell_enabled?: boolean;
 
@@ -181,6 +184,10 @@ export default function BotCenter() {
     duration: 5,
     duration_unit: "m",
     max_open_trades: 5,
+
+    // ✅ NEW
+    cooldown_after_loss: 0,
+
     early_sell_enabled: false,
     early_sell_profit: 0,
   });
@@ -367,6 +374,7 @@ export default function BotCenter() {
             "duration",
             "duration_unit",
             "max_open_trades",
+            "cooldown_after_loss", // ✅ NEW
             "early_sell_enabled",
             "early_sell_profit",
           ]);
@@ -376,6 +384,10 @@ export default function BotCenter() {
             duration: Number(b.params?.duration ?? 5),
             duration_unit: (b.params?.duration_unit as DurationUnit) ?? computeExecUnit(b.timeframe),
             max_open_trades: Number(b.params?.max_open_trades ?? 5),
+
+            // ✅ NEW
+            cooldown_after_loss: Math.max(0, Math.floor(Number(b.params?.cooldown_after_loss ?? 0) || 0)),
+
             early_sell_enabled: Boolean(b.params?.early_sell_enabled ?? false),
             early_sell_profit: Number(b.params?.early_sell_profit ?? 0),
           };
@@ -536,6 +548,10 @@ export default function BotCenter() {
         duration: p.duration ?? 5,
         duration_unit: p.duration_unit ?? (timeframe === "1s" ? "t" : "m"),
         max_open_trades: p.max_open_trades ?? 5,
+
+        // ✅ NEW
+        cooldown_after_loss: Math.max(0, Math.floor(Number(p.cooldown_after_loss ?? 0) || 0)),
+
         early_sell_enabled: Boolean(p.early_sell_enabled ?? false),
         early_sell_profit: Number(p.early_sell_profit ?? 0),
       };
@@ -546,7 +562,12 @@ export default function BotCenter() {
       const allowedKeys = new Set(
         Object.keys(defaults)
           .concat(EXECUTION_FIELDS.map((f) => f.key))
-          .concat(["max_open_trades", "early_sell_enabled", "early_sell_profit"]),
+          .concat([
+            "max_open_trades",
+            "cooldown_after_loss", // ✅ NEW
+            "early_sell_enabled",
+            "early_sell_profit",
+          ]),
       );
 
       const next: Record<string, any> = {};
@@ -1252,11 +1273,17 @@ function StrategySettingsModal({
       const duration = parseNum(next.duration);
       next.duration = Math.max(1, duration ?? Number(params.duration ?? 5));
 
-      // keep whatever unit is selected
       next.duration_unit = (next.duration_unit ?? params.duration_unit ?? "m") as DurationUnit;
 
       const mot = parseNum(next.max_open_trades);
       next.max_open_trades = Math.max(1, mot ?? Number(params.max_open_trades ?? 5));
+
+      // ✅ NEW: cooldown_after_loss (seconds)
+      const cd = parseNum(next.cooldown_after_loss);
+      next.cooldown_after_loss = Math.max(
+        0,
+        Math.floor(cd ?? Number(params.cooldown_after_loss ?? 0) || 0),
+      );
     }
 
     // early sell
@@ -1438,6 +1465,23 @@ function StrategySettingsModal({
                   value={form.max_open_trades ?? ""}
                   onChange={(e) => setForm({ ...form, max_open_trades: e.target.value })}
                 />
+              </div>
+
+              {/* ✅ NEW */}
+              <div>
+                <label className="block text-sm mb-1">Cooldown after loss (sec)</label>
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  min={0}
+                  step={1}
+                  className="w-full rounded-lg border border-border bg-background px-3 py-2"
+                  value={form.cooldown_after_loss ?? ""}
+                  onChange={(e) => setForm({ ...form, cooldown_after_loss: e.target.value })}
+                />
+                <div className="mt-1 text-xs text-muted-foreground">
+                  After a losing trade, execution pauses for this many seconds (signals still run). Set to 0 to disable.
+                </div>
               </div>
 
               <div>
