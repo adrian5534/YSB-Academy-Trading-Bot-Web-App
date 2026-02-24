@@ -73,6 +73,14 @@ export class DerivClient {
         try {
           const text = typeof data === "string" ? data : data.toString();
           const msg = JSON.parse(text);
+
+          // ✅ Learn subscription ids from streaming ticks so we can unsubscribe (forget) later.
+          const tickSymbol = String(msg?.tick?.symbol ?? "").trim();
+          const subId = String(msg?.subscription?.id ?? "").trim();
+          if (tickSymbol && subId) {
+            this.tickSubIdBySymbol.set(tickSymbol, subId);
+          }
+
           const id = msg.req_id;
           if (id && this.pending.has(id)) {
             const p = this.pending.get(id)!;

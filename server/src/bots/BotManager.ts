@@ -32,53 +32,76 @@ type Running = {
 export class BotManager {
   private runs = new Map<string, Running>(); // key = `${userId}::${runId}`
   private derivClients = new Map<string, DerivClient>();
-  private openCounts = new Map<string, number>();
 
-  // ✅ minimum time between trades (per run/config)
-  private lastTradeAtByCfgKey = new Map<string, number>();
+  // ✅ track what we believe is subscribed per account (so we can unsubscribe removed symbols)
+  private tickSymbolsByAccountId = new Map<string, Set<string>>();
 
-  // ✅ trade frequency limiter (rolling 60s window, per run/config)
-  private tradeTimestamps60sByCfgKey = new Map<string, number[]>();
+  // ---- runtime state maps/sets (per run/config/account) ----
+  private lastTickLogAt = new Map<string, number>(); // `${userId}::${symbol}` -> last log ms
 
-  // ✅ cooldown runtime state (per run/config)
-  private cooldownUntilByCfgKey = new Map<string, number>();
+  private openCounts = new Map<string, number>(); // cfgKey -> open count
 
-  // ✅ losing-streak protection runtime state (per run/config)
-  private consecutiveLossesByCfgKey = new Map<string, number>();
-  private lossPauseUntilByCfgKey = new Map<string, number>();
+  private cooldownUntilByCfgKey = new Map<string, number>(); // cfgKey -> epoch ms
+  private lastTradeAtByCfgKey = new Map<string, number>(); // cfgKey -> epoch ms
+  private tradeTimestamps60sByCfgKey = new Map<string, number[]>(); // cfgKey -> rolling 60s trade timestamps
 
-  // ✅ tick volatility filter state (per run/config): recent quotes
-  // cfgKey -> { quotes: number[] }
-  private recentTickQuotesByCfgKey = new Map<string, { quotes: number[] }>();
+  private consecutiveLossesByCfgKey = new Map<string, number>(); // cfgKey -> losses
+  private lossPauseUntilByCfgKey = new Map<string, number>(); // cfgKey -> epoch ms
 
-  // ✅ spike exhaustion protection (per run/config)
-  // cfgKey -> epochMs
-  private spikePauseUntilByCfgKey = new Map<string, number>();
+  private recentTickQuotesByCfgKey = new Map<string, { quotes: number[] }>(); // cfgKey -> recent quotes
+  private spikePauseUntilByCfgKey = new Map<string, number>(); // cfgKey -> epoch ms
 
-  // ✅ throttle reconciliation per account (kept as accountId-keyed for backward behavior)
-  private lastReconcileAt = new Map<string, number>();
+  private lastExecutedSignalKeyByCfgKey = new Map<string, string>(); // cfgKey -> last signalKey
 
-  // ✅ early-sell latch state (in-memory, per server process)
-  // contractId -> state
+  private reconcileTimers = new Map<string, NodeJS.Timeout>(); // accountKey -> timer
+  private reconcileInFlight = new Set<string>(); // accountKey
+  private lastReconcileAt = new Map<string, number>(); // accountId -> epoch ms
+
+  private hasEarlySellOpenByAccount = new Map<string, boolean>(); // accountKey -> bool
+  private armedCountByAccount = new Map<string, number>(); // accountKey -> armed count
   private earlySellState = new Map<
     number,
     { armed: boolean; threshold: number; armedAt: number; maxProfitSeen: number }
-  >();
+  >(); // contractId -> state
+  private contractToAccountKey = new Map<number, string>(); // contractId -> accountKey
 
-  // ✅ adaptive reconcile helpers (per user+account)
-  private hasEarlySellOpenByAccount = new Map<string, boolean>(); // key = `${userId}::${accountId}` -> boolean
-  private armedCountByAccount = new Map<string, number>(); // key = `${userId}::${accountId}` -> count
-  private contractToAccountKey = new Map<number, string>(); // contractId -> `${userId}::${accountId}`
+  private wantsTicks(cfg: BotConfig) {
+    // tick-by-tick requires ticks; also allow non-1s bots to opt-in via params.stream_ticks
+    return this.isTickByTickCfg(cfg) || Boolean((cfg.params as any)?.stream_ticks);
+  }
 
-  private reconcileTimers = new Map<string, NodeJS.Timeout>(); // key = `${userId}::${accountId}`
-  private reconcileInFlight = new Set<string>(); // key = `${userId}::${accountId}`
+  private async syncAccountTickSubscriptions(accountId: string) {
+    const deriv = this.derivClients.get(accountId);
+    if (!deriv) return;
 
-  // ✅ throttle noisy tick logs (per user+symbol)
-  private lastTickLogAt = new Map<string, number>();
+    const desired = new Set<string>();
+    for (const run of this.runs.values()) {
+      for (const cfg of run.configs) {
+        if (!cfg.enabled) continue;
+        if (cfg.account_id !== accountId) continue;
+        if (!this.wantsTicks(cfg)) continue;
+        const sym = String(cfg.symbol ?? "").trim();
+        if (sym) desired.add(sym);
+      }
+    }
 
-  // ✅ Dedup state: one execution per candle/signal (per run/config)
-  // cfgKey -> `${lastCandleT}::${side}::${reason}`
-  private lastExecutedSignalKeyByCfgKey = new Map<string, string>();
+    const prev = this.tickSymbolsByAccountId.get(accountId) ?? new Set<string>();
+
+    // subscribe missing
+    for (const sym of desired) {
+      if (prev.has(sym)) continue;
+      await deriv.subscribeTicks(sym).catch(() => void 0);
+    }
+
+    // unsubscribe no longer needed
+    for (const sym of prev) {
+      if (desired.has(sym)) continue;
+      await deriv.unsubscribeTicks(sym).catch(() => void 0);
+    }
+
+    if (desired.size) this.tickSymbolsByAccountId.set(accountId, desired);
+    else this.tickSymbolsByAccountId.delete(accountId);
+  }
 
   private runKey(userId: string, runId: string) {
     return `${userId}::${runId}`;
@@ -663,6 +686,15 @@ export class BotManager {
     if (bot?.timer) clearInterval(bot.timer);
     if (bot) this.clearRunReconcileTimers(bot);
     this.runs.delete(key);
+
+    // ✅ after removing run, resync tick subscriptions for affected accounts
+    if (bot) {
+      const accountIds = Array.from(new Set(bot.configs.map((c) => c.account_id)));
+      for (const accountId of accountIds) {
+        await this.syncAccountTickSubscriptions(accountId).catch(() => void 0);
+      }
+    }
+
     this.clearRunEphemeralState(userId, runId);
     this.wsLog(userId, "bot stopped", { userId, runId });
     this.wsStatus(userId, this.getStatus(userId));
@@ -1597,14 +1629,11 @@ export class BotManager {
 
     const deriv = await this.getDerivClient(cfg.account_id, token);
 
-    // ✅ if timeframe is 1s => tick-by-tick execution; just ensure tick subscription here
-    if (this.isTickByTickCfg(cfg)) {
-      await deriv.subscribeTicks(cfg.symbol).catch((e) =>
-        this.wsLog(bot.userId, "tick subscribe failed", { symbol: cfg.symbol, error: String(e) }),
-      );
-      // still allow reconcile to run above; skip candle polling execution
-      return;
-    }
+    // ✅ ensure tick subscriptions are correct for this account (multiple symbols supported)
+    await this.syncAccountTickSubscriptions(cfg.account_id);
+
+    // ✅ if timeframe is 1s => tick-by-tick execution; skip candle polling execution
+    if (this.isTickByTickCfg(cfg)) return;
 
     const granSec = timeframeToSec(cfg.timeframe);
     const raw = await deriv.candles(cfg.symbol, granSec, 120);
@@ -2076,6 +2105,12 @@ export class BotManager {
     }
     this.wsLog(userId, "bot.configs.updated", { userId, runs_updated: updated });
     this.wsStatus(userId, this.getStatus(userId));
+
+    // ✅ after config changes, resync subscriptions for involved accounts
+    const accountIds = Array.from(new Set(configs.map((c) => c.account_id)));
+    for (const accountId of accountIds) {
+      await this.syncAccountTickSubscriptions(accountId).catch(() => void 0);
+    }
   }
 }
 
