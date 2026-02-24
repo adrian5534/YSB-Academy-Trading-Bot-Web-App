@@ -1203,8 +1203,323 @@ export class BotManager {
     return { ok: true, range, window, min, max, quotesUsed: window };
   }
 
+  // ✅ tick->1s candle builder state (per run/config)
+  private tick1sCandleStateByCfgKey = new Map<
+    string,
+    { sec: number; o: number; h: number; l: number; c: number; v: number; candles: any[] }
+  >();
+
+  // ✅ tick execution throttle / in-flight (per run/config)
+  private tickExecInFlightByCfgKey = new Set<string>();
+  private lastTickExecAtByCfgKey = new Map<string, number>();
+
+  private isTickByTickCfg(cfg: BotConfig): boolean {
+    return String(cfg.timeframe ?? "").trim().toLowerCase() === "1s";
+  }
+
+  private update1sCandleFromTick(cfgKey: string, epochSec: number, quote: number) {
+    const sec = Math.floor(epochSec);
+    if (!Number.isFinite(sec) || !Number.isFinite(quote)) return;
+
+    const st = this.tick1sCandleStateByCfgKey.get(cfgKey);
+    if (!st) {
+      this.tick1sCandleStateByCfgKey.set(cfgKey, {
+        sec,
+        o: quote,
+        h: quote,
+        l: quote,
+        c: quote,
+        v: 1,
+        candles: [],
+      });
+      return;
+    }
+
+    if (st.sec === sec) {
+      st.h = Math.max(st.h, quote);
+      st.l = Math.min(st.l, quote);
+      st.c = quote;
+      st.v += 1;
+      return;
+    }
+
+    // close previous second candle
+    st.candles.push({ t: st.sec, o: st.o, h: st.h, l: st.l, c: st.c, v: st.v });
+    if (st.candles.length > 300) st.candles.splice(0, st.candles.length - 300);
+
+    // start new candle
+    st.sec = sec;
+    st.o = quote;
+    st.h = quote;
+    st.l = quote;
+    st.c = quote;
+    st.v = 1;
+  }
+
+  private get1sCandles(cfgKey: string, count: number) {
+    const st = this.tick1sCandleStateByCfgKey.get(cfgKey);
+    if (!st) return [];
+    const arr = st.candles.slice(-Math.max(1, count - 1));
+    // include current forming candle as last candle
+    arr.push({ t: st.sec, o: st.o, h: st.h, l: st.l, c: st.c, v: st.v });
+    return arr.slice(-count);
+  }
+
+  private buildSignalKey(candles: Array<{ t: number }>, signal: any): string {
+    const last = candles?.[candles.length - 1];
+    const t = Math.floor(Number(last?.t) || 0);
+    const side = String(signal?.side ?? "");
+    const reason = String(signal?.reason ?? "");
+    return `${t}::${side}::${reason}`;
+  }
+
+  private buildTickSignalKey(epochSec: number, signal: any): string {
+    const t = Math.floor(Number(epochSec) || 0);
+    const side = String(signal?.side ?? "");
+    const reason = String(signal?.reason ?? "");
+    return `${t}::${side}::${reason}`;
+  }
+
+  // ✅ Dedup helpers: one execution per candle/signal (per run/config)
+  private hasExecutedSignal(cfgKey: string, signalKey: string): boolean {
+    if (!cfgKey || !signalKey) return false;
+    return (this.lastExecutedSignalKeyByCfgKey.get(cfgKey) ?? "") === signalKey;
+  }
+
+  private markSignalExecuted(cfgKey: string, signalKey: string) {
+    if (!cfgKey || !signalKey) return;
+    this.lastExecutedSignalKeyByCfgKey.set(cfgKey, signalKey);
+  }
+
+  private async runTickByTick(bot: Running, cfg: BotConfig, epochSec: number, quote: number) {
+    const ck = this.cfgKey(bot, cfg);
+
+    // throttle + prevent overlap
+    const throttleMs = Math.max(0, Number((cfg.params as any)?.tick_exec_throttle_ms ?? 250) || 250);
+    const now = Date.now();
+    const last = this.lastTickExecAtByCfgKey.get(ck) ?? 0;
+    if (now - last < throttleMs) return;
+    if (this.tickExecInFlightByCfgKey.has(ck)) return;
+
+    this.lastTickExecAtByCfgKey.set(ck, now);
+    this.tickExecInFlightByCfgKey.add(ck);
+
+    try {
+      // need an already-connected client (runConfig subscribes/creates it)
+      const deriv = this.derivClients.get(cfg.account_id);
+      if (!deriv) return;
+
+      const candles = this.get1sCandles(ck, 120);
+      if (candles.length < 20) return; // warm-up
+
+      const strat = getStrategy(cfg.strategy_id);
+      const ctx: StrategyContext = { symbol: cfg.symbol, timeframe: cfg.timeframe as any, now: new Date() };
+      const signal = strat.generateSignal(candles, ctx, cfg.params);
+
+      if (!signal?.side) return;
+      if ((signal?.confidence ?? 0) < 0.5) return;
+
+      // tick-level dedupe key (1 per second per side/reason)
+      const signalKey = this.buildTickSignalKey(epochSec, signal);
+
+      // --- BEGIN: reuse existing execution section (copied from runConfig) ---
+      if (this.hasExecutedSignal(ck, signalKey)) return;
+
+      // spike pause gate
+      const sp = this.isSpikePauseActive(ck);
+      if (sp.active) return;
+
+      // spike exhaustion trigger
+      const sg = this.getSpikeExhaustionGate(ck, cfg);
+      if (!sg.ok && sg.triggered) {
+        this.startSpikePause(ck, sg.pauseSec);
+        return;
+      }
+
+      // tick range gate
+      const tg = this.getTickRangeGate(ck, cfg);
+      if (!tg.ok) return;
+
+      // cooldown gate
+      const cd = this.isInCooldown(ck);
+      if (cd.active) return;
+
+      // min time between trades gate
+      const mt = this.isMinTradeIntervalActive(ck, cfg);
+      if (mt.active) return;
+
+      // trades-per-minute gate
+      const tf = this.isTradeFrequencyLimited(ck, cfg);
+      if (tf.active) return;
+
+      // losing-streak pause gate
+      const lp = this.isLossPauseActive(ck);
+      if (lp.active) return;
+
+      const maxOpenTrades = Math.max(1, Number(cfg.params?.max_open_trades ?? 5));
+      const currentOpen = this.getOpenCount(bot, cfg);
+      if (currentOpen >= maxOpenTrades) return;
+
+      const gate = await canOpenTrade(bot.userId, { max_open_trades: maxOpenTrades });
+      if (!gate.ok) return;
+
+      const rules = await getRiskRules(bot.userId);
+      const stake = computeStake(rules, 1000);
+
+      if (cfg.mode === "paper") {
+        this.incOpen(bot, cfg);
+        try {
+          const { profit } = await this.paperTrade(bot.userId, cfg, signal, stake);
+          this.markSignalExecuted(ck, signalKey);
+          this.markTradeExecuted(ck);
+
+          this.maybeCooldownAfterLoss({
+            userId: bot.userId,
+            cfgKey: ck,
+            cfg,
+            profit,
+            reason: "paper_trade_loss(tick)",
+            meta: { runId: bot.runId, cfg_id: cfg.id, symbol: cfg.symbol, timeframe: cfg.timeframe },
+          });
+
+          this.maybeApplyLosingStreakProtection({
+            userId: bot.userId,
+            cfgKey: ck,
+            cfg,
+            profit,
+            reason: "paper_trade_result(tick)",
+            meta: { runId: bot.runId, cfg_id: cfg.id, symbol: cfg.symbol, timeframe: cfg.timeframe },
+          });
+        } finally {
+          this.decOpen(bot, cfg);
+        }
+      } else if (cfg.mode === "live") {
+        const contractType = signal.side === "buy" ? "CALL" : "PUT";
+        const stakeParam = Number(cfg.params?.stake ?? stake);
+        const dur = Number(cfg.params?.duration ?? 5);
+        const durUnit = (cfg.params?.duration_unit ?? "m") as "m" | "h" | "d" | "t";
+
+        this.incOpen(bot, cfg);
+        try {
+          const res = await deriv.buyRiseFall({
+            symbol: cfg.symbol,
+            side: contractType,
+            stake: stakeParam,
+            duration: dur,
+            duration_unit: durUnit,
+            currency: "USD",
+          });
+
+          this.markSignalExecuted(ck, signalKey);
+          this.markTradeExecuted(ck);
+
+          const buy = res?.buy || res;
+          const contractId = Number(buy?.contract_id ?? buy?.contract_id_buy ?? 0);
+          const buyPrice = Number(buy?.buy_price ?? buy?.price ?? stakeParam);
+          const openedAt = new Date().toISOString();
+
+          const earlyEnabled = Boolean((cfg.params as any)?.early_sell_enabled ?? false);
+          const earlyProfit = Math.max(0, Number((cfg.params as any)?.early_sell_profit ?? 0) || 0);
+
+          const insert = await supabaseAdmin
+            .from("trades")
+            .insert({
+              user_id: bot.userId,
+              account_id: cfg.account_id,
+              mode: "live",
+              symbol: cfg.symbol,
+              strategy_id: cfg.strategy_id,
+              timeframe: cfg.timeframe,
+              side: signal.side,
+              entry: buyPrice,
+              opened_at: openedAt,
+              closed_at: null,
+              meta: {
+                contract_id: contractId,
+                stake: stakeParam,
+                duration: dur,
+                duration_unit: durUnit,
+                early_sell_enabled: earlyEnabled,
+                early_sell_profit: earlyEnabled ? earlyProfit : 0,
+              },
+            })
+            .select("*")
+            .single();
+
+          if (insert.data) {
+            this.wsTrade(bot.userId, insert.data);
+            this.tradeToCfgKey.set(String(insert.data.id), ck);
+          }
+
+          const ms = durationToMs(dur, durUnit) + 2000;
+          setTimeout(async () => {
+            const tradeId = String(insert?.data?.id ?? "");
+            try {
+              if (!contractId) return;
+
+              if (tradeId) {
+                const { data: row } = await supabaseAdmin.from("trades").select("closed_at").eq("id", tradeId).maybeSingle();
+                if (row?.closed_at) return;
+              }
+
+              let snap: any = null;
+              for (let i = 0; i < 6; i++) {
+                snap = await deriv.openContract(contractId).catch(() => null);
+                if (snap?.is_sold) break;
+                await new Promise((r) => setTimeout(r, 1500));
+              }
+
+              const sellPrice = Number(snap?.sell_price ?? snap?.bid_price ?? 0);
+              const profit = Number.isFinite(sellPrice) && Number.isFinite(buyPrice) ? sellPrice - buyPrice : 0;
+              const closedAt =
+                snap?.is_sold && snap?.sell_time
+                  ? new Date(Number(snap.sell_time) * 1000).toISOString()
+                  : new Date().toISOString();
+
+              if (tradeId) {
+                const { data: updated } = await supabaseAdmin
+                  .from("trades")
+                  .update({ exit: sellPrice, profit, closed_at: closedAt })
+                  .eq("id", tradeId)
+                  .select("*")
+                  .single();
+                if (updated) this.wsTrade(bot.userId, updated);
+              }
+
+              this.maybeCooldownAfterLoss({
+                userId: bot.userId,
+                cfgKey: ck,
+                cfg,
+                profit,
+                reason: "live_finalize_loss(tick)",
+                meta: { runId: bot.runId, tradeId, contractId, symbol: cfg.symbol },
+              });
+
+              this.maybeApplyLosingStreakProtection({
+                userId: bot.userId,
+                cfgKey: ck,
+                cfg,
+                profit,
+                reason: "live_finalize_result(tick)",
+                meta: { runId: bot.runId, tradeId, contractId, symbol: cfg.symbol },
+              });
+            } finally {
+              if (tradeId) this.releaseOpenOnceByTradeId(tradeId);
+              else this.decOpen(bot, cfg);
+            }
+          }, ms);
+        } catch (e) {
+          this.decOpen(bot, cfg);
+          this.wsLog(bot.userId, "live buy error (tick)", { error: String(e) });
+        }
+      }
+      // --- END: execution section ---
+    } finally {
+      this.tickExecInFlightByCfgKey.delete(ck);
+    }
+  }
+
   private handleTickSafely(tick: any) {
-    // Defensive, non-intrusive tick handling (no cross-run side effects)
     try {
       if (!tick || typeof tick.epoch !== "number") return;
 
@@ -1213,25 +1528,28 @@ export class BotManager {
       if (!symbol) return;
       if (!Number.isFinite(quote)) return;
 
+      const epochSec = Number(tick.epoch);
+
       const now = Date.now();
       const THROTTLE_MS = 2000;
 
       for (const bot of this.runs.values()) {
-        // update tick buffers per matching enabled config (per run/config)
         for (const cfg of bot.configs) {
           if (!cfg.enabled) continue;
           if (cfg.symbol !== symbol) continue;
 
           const ck = this.cfgKey(bot, cfg);
 
-          // ✅ keep enough ticks for BOTH:
-          // - tick range filter (tick_window)
-          // - spike exhaustion detection (spike_window_ticks)
           const keepN = Math.max(this.parseTickWindow(cfg), this.parseSpikeWindowTicks(cfg));
           this.pushTickQuote(ck, quote, keepN);
+
+          // ✅ build 1s candles + execute tick-by-tick
+          if (this.isTickByTickCfg(cfg)) {
+            this.update1sCandleFromTick(ck, epochSec, quote);
+            void this.runTickByTick(bot, cfg, epochSec, quote).catch(() => void 0);
+          }
         }
 
-        // keep existing throttled tick log behavior (only for users with matching symbol)
         const matches = bot.configs.some((c) => c.enabled && c.symbol === symbol);
         if (!matches) continue;
 
@@ -1248,21 +1566,6 @@ export class BotManager {
         console.debug("tick payload (final):", JSON.stringify(tick));
       } catch {}
     }
-  }
-
-  private buildSignalKey(candles: any[], signal: any): string {
-    const lastCandleT = Number(candles?.[candles.length - 1]?.t ?? 0); // epoch seconds
-    const side = String(signal?.side ?? "");
-    const reason = String(signal?.reason ?? "");
-    return `${lastCandleT}::${side}::${reason}`;
-  }
-
-  private hasExecutedSignal(cfgKey: string, signalKey: string): boolean {
-    return (this.lastExecutedSignalKeyByCfgKey.get(cfgKey) ?? "") === signalKey;
-  }
-
-  private markSignalExecuted(cfgKey: string, signalKey: string) {
-    this.lastExecutedSignalKeyByCfgKey.set(cfgKey, signalKey);
   }
 
   private async runConfig(bot: Running, cfg: BotConfig) {
@@ -1294,11 +1597,13 @@ export class BotManager {
 
     const deriv = await this.getDerivClient(cfg.account_id, token);
 
-    // ✅ reconcile stuck open DB trades (especially after stop/restart)
-    if (cfg.mode === "live") {
-      await this.reconcileAccountLiveTrades(bot.userId, cfg.account_id).catch((e) =>
-        this.wsLog(bot.userId, "reconcile failed", { accountId: cfg.account_id, error: String(e) }),
+    // ✅ if timeframe is 1s => tick-by-tick execution; just ensure tick subscription here
+    if (this.isTickByTickCfg(cfg)) {
+      await deriv.subscribeTicks(cfg.symbol).catch((e) =>
+        this.wsLog(bot.userId, "tick subscribe failed", { symbol: cfg.symbol, error: String(e) }),
       );
+      // still allow reconcile to run above; skip candle polling execution
+      return;
     }
 
     const granSec = timeframeToSec(cfg.timeframe);

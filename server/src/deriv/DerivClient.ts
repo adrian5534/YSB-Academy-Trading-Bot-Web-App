@@ -23,6 +23,10 @@ export class DerivClient {
   private heartbeat?: NodeJS.Timeout;
   private lastPong = 0;
 
+  // ✅ tick streaming subscriptions (desired vs current id)
+  private desiredTickSymbols = new Set<string>();
+  private tickSubIdBySymbol = new Map<string, string>();
+
   constructor(private token?: string, onMessage?: (msg: any) => void) {
     this.onMessageCallback = onMessage;
   }
@@ -33,15 +37,19 @@ export class DerivClient {
     const appId = Number(process.env.DERIV_APP_ID ?? (env as any)?.DERIV_APP_ID ?? DEFAULT_APP_ID);
     const errors: string[] = [];
 
-    // rotate starting endpoint to spread load after failures
     for (let i = 0; i < WS_ENDPOINTS.length; i++) {
       const idx = (this.endpointIndex + i) % WS_ENDPOINTS.length;
       const base = WS_ENDPOINTS[idx];
       const url = `${base}?app_id=${appId}`;
       try {
         await this.openAt(url);
-        this.endpointIndex = idx; // remember working endpoint
+        this.endpointIndex = idx;
+
         if (this.token) await this.send({ authorize: this.token });
+
+        // ✅ re-subscribe tick streams after (re)connect
+        await this.resubscribeDesiredTicks().catch(() => void 0);
+
         return;
       } catch (e: any) {
         errors.push(`${base}: ${e?.message || String(e)}`);
@@ -437,5 +445,64 @@ export class DerivClient {
     );
     if (res?.error) throw new Error(res.error.message || "Deriv sell error");
     return res;
+  }
+
+  // ✅ subscribe to live ticks for a symbol
+  async subscribeTicks(symbol: string) {
+    const sym = String(symbol ?? "").trim();
+    if (!sym) throw new Error("subscribeTicks: symbol required");
+
+    this.desiredTickSymbols.add(sym);
+
+    if (!this.isOpen || !this.ws) await this.connect();
+
+    const res = await this.sendWithRetry<any>(
+      { ticks: sym, subscribe: 1 },
+      { timeoutMs: 20_000, retries: 2, retryDelayMs: 600, safeToRetry: true },
+    );
+
+    const subId = String(res?.subscription?.id ?? "");
+    if (subId) this.tickSubIdBySymbol.set(sym, subId);
+    return subId || null;
+  }
+
+  // ✅ unsubscribe tick stream for a symbol
+  async unsubscribeTicks(symbol: string) {
+    const sym = String(symbol ?? "").trim();
+    if (!sym) return;
+
+    this.desiredTickSymbols.delete(sym);
+
+    const subId = this.tickSubIdBySymbol.get(sym);
+    if (!subId) return;
+
+    if (this.isOpen && this.ws) {
+      await this.sendWithRetry<any>(
+        { forget: subId },
+        { timeoutMs: 15_000, retries: 2, retryDelayMs: 500, safeToRetry: true },
+      ).catch(() => void 0);
+    }
+
+    this.tickSubIdBySymbol.delete(sym);
+  }
+
+  private async resubscribeDesiredTicks() {
+    if (!this.desiredTickSymbols.size) return;
+
+    // old subscription ids are not reliable across reconnects
+    this.tickSubIdBySymbol.clear();
+
+    for (const sym of Array.from(this.desiredTickSymbols)) {
+      try {
+        const res = await this.sendWithRetry<any>(
+          { ticks: sym, subscribe: 1 },
+          { timeoutMs: 20_000, retries: 2, retryDelayMs: 600, safeToRetry: true },
+        );
+        const subId = String(res?.subscription?.id ?? "");
+        if (subId) this.tickSubIdBySymbol.set(sym, subId);
+      } catch {
+        // ignore best-effort
+      }
+    }
   }
 }
