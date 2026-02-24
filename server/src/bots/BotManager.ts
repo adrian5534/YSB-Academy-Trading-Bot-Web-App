@@ -38,6 +38,10 @@ export class BotManager {
   // cfgKey (`userId::runId::cfgId`) -> epochMs
   private lastTradeAtByCfgKey = new Map<string, number>();
 
+  // ✅ trade frequency limiter (rolling 60s window, per run/config)
+  // cfgKey (`userId::runId::cfgId`) -> sorted epochMs[]
+  private tradeTimestamps60sByCfgKey = new Map<string, number[]>();
+
   // ✅ cooldown runtime state (per run/config)
   // cfgKey (`userId::runId::cfgId`) -> epochMs
   private cooldownUntilByCfgKey = new Map<string, number>();
@@ -235,6 +239,55 @@ export class BotManager {
     });
   }
 
+  // ---- trade frequency limiter helpers (rolling 60 seconds, runtime state) ----
+  private parseMaxTradesPerMinute(cfg: BotConfig): number {
+    const raw = (cfg?.params as any)?.max_trades_per_minute;
+    const n = typeof raw === "number" ? raw : raw === "" || raw == null ? 0 : Number(raw);
+    if (!Number.isFinite(n)) return 0;
+    // Clamp (0 disables), allow up to 600/min
+    return Math.min(600, Math.max(0, Math.floor(n)));
+  }
+
+  private pruneTradeWindow60s(cfgKey: string, nowMs: number): number[] {
+    const cutoff = nowMs - 60_000;
+    const arr = this.tradeTimestamps60sByCfgKey.get(cfgKey);
+    if (!arr?.length) return [];
+
+    // arr is kept sorted (we only push Date.now()) so we can drop from the front
+    let i = 0;
+    while (i < arr.length && arr[i] <= cutoff) i++;
+
+    if (i > 0) arr.splice(0, i);
+
+    if (arr.length === 0) {
+      this.tradeTimestamps60sByCfgKey.delete(cfgKey);
+      return [];
+    }
+
+    this.tradeTimestamps60sByCfgKey.set(cfgKey, arr);
+    return arr;
+  }
+
+  private isTradeFrequencyLimited(
+    cfgKey: string,
+    cfg: BotConfig,
+  ): { active: boolean; remainingMs: number; limit: number; count: number } {
+    const limit = this.parseMaxTradesPerMinute(cfg);
+    if (!limit) return { active: false, remainingMs: 0, limit: 0, count: 0 };
+
+    const now = Date.now();
+    const arr = this.pruneTradeWindow60s(cfgKey, now);
+    const count = arr.length;
+
+    if (count >= limit) {
+      const oldest = arr[0] ?? now;
+      const remainingMs = Math.max(0, oldest + 60_000 - now);
+      return { active: true, remainingMs, limit, count };
+    }
+
+    return { active: false, remainingMs: 0, limit, count };
+  }
+
   // ---- min time between trades helpers (runtime state) ----
   private parseMinSecondsBetweenTrades(cfg: BotConfig): number {
     const raw = (cfg?.params as any)?.min_seconds_between_trades;
@@ -248,8 +301,26 @@ export class BotManager {
     return this.lastTradeAtByCfgKey.get(cfgKey) ?? 0;
   }
 
+  // ✅ record an executed trade for both:
+  // - min_seconds_between_trades (lastTradeAt)
+  // - max_trades_per_minute (rolling window)
   private markTradeExecuted(cfgKey: string) {
-    this.lastTradeAtByCfgKey.set(cfgKey, Date.now());
+    const now = Date.now();
+
+    // last trade time (for min interval)
+    this.lastTradeAtByCfgKey.set(cfgKey, now);
+
+    // rolling 60s window (for trades/minute)
+    const arr = this.tradeTimestamps60sByCfgKey.get(cfgKey) ?? [];
+    const cutoff = now - 60_000;
+
+    // prune (sorted array)
+    let i = 0;
+    while (i < arr.length && arr[i] <= cutoff) i++;
+    if (i > 0) arr.splice(0, i);
+
+    arr.push(now);
+    this.tradeTimestamps60sByCfgKey.set(cfgKey, arr);
   }
 
   private isMinTradeIntervalActive(
@@ -332,6 +403,14 @@ export class BotManager {
       const prefix = `${userId}::${runId}::`;
       for (const k of Array.from(this.lastTradeAtByCfgKey.keys())) {
         if (k.startsWith(prefix)) this.lastTradeAtByCfgKey.delete(k);
+      }
+    }
+
+    // ✅ trades-per-minute window state is keyed by run/config
+    {
+      const prefix = `${userId}::${runId}::`;
+      for (const k of Array.from(this.tradeTimestamps60sByCfgKey.keys())) {
+        if (k.startsWith(prefix)) this.tradeTimestamps60sByCfgKey.delete(k);
       }
     }
 
@@ -652,7 +731,7 @@ export class BotManager {
       const scored = (openTrades as any[]).map((tr) => {
         const cid = Number(tr?.meta?.contract_id ?? 0);
         const st = cid ? this.earlySellState.get(cid) : undefined;
-        const earlyEnabled = Boolean(tr?.meta?.early_sell_enabled) && toNum(tr?.meta?.early_sell_profit, 0) > 0;
+        const earlyEnabled = Boolean(tr?.meta?.early_sell_enabled) && toNum(tr?.meta?.early_sell_profit, 0);
         const score = (st?.armed ? 100 : 0) + (earlyEnabled ? 10 : 0);
         return { tr, cid, score };
       });
@@ -1095,6 +1174,20 @@ export class BotManager {
       return;
     }
 
+    // ✅ trades-per-minute gate (execution only; does not block signal generation)
+    const tf = this.isTradeFrequencyLimited(ck, cfg);
+    if (tf.active) {
+      this.wsLog(bot.userId, "trade frequency limit reached (skipping execution)", {
+        runId: bot.runId,
+        cfg_id: cfg.id,
+        symbol: cfg.symbol,
+        remaining_sec: Math.ceil(tf.remainingMs / 1000),
+        max_trades_per_minute: tf.limit,
+        trades_in_last_60s: tf.count,
+      });
+      return;
+    }
+
     // ✅ losing-streak pause gate (execution only; does not block signal generation)
     const lp = this.isLossPauseActive(ck);
     if (lp.active) {
@@ -1140,7 +1233,7 @@ export class BotManager {
       try {
         const { profit } = await this.paperTrade(bot.userId, cfg, signal, stake);
 
-        // ✅ mark trade executed (for min time between trades)
+        // ✅ record trade execution (min interval + trades/minute)
         this.markTradeExecuted(ck);
 
         // ✅ do not reset cooldown_after_loss behavior
@@ -1189,7 +1282,7 @@ export class BotManager {
           currency: "USD",
         });
 
-        // ✅ mark trade executed as soon as buy succeeds
+        // ✅ record trade execution as soon as buy succeeds (min interval + trades/minute)
         this.markTradeExecuted(ck);
 
         // Insert opened live trade

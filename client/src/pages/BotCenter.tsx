@@ -38,6 +38,9 @@ type StrategyParams = {
   /** Minimum time between trade executions (seconds). 0 disables. */
   min_seconds_between_trades?: number;
 
+  /** Max trades allowed within a rolling 60-second window. 0 disables. */
+  max_trades_per_minute?: number;
+
   /** Pause execution for N seconds after a losing trade (0 disables) */
   cooldown_after_loss?: number;
 
@@ -195,9 +198,12 @@ export default function BotCenter() {
     max_open_trades: 5,
 
     min_seconds_between_trades: 0,
+
+    // ✅ NEW (trade frequency limiter)
+    max_trades_per_minute: 0,
+
     cooldown_after_loss: 0,
 
-    // ✅ NEW (losing streak protection)
     max_consecutive_losses: 0,
     pause_after_loss_minutes: 0,
 
@@ -388,12 +394,13 @@ export default function BotCenter() {
             "duration_unit",
             "max_open_trades",
             "min_seconds_between_trades",
-            "cooldown_after_loss",
 
             // ✅ NEW
+            "max_trades_per_minute",
+
+            "cooldown_after_loss",
             "max_consecutive_losses",
             "pause_after_loss_minutes",
-
             "early_sell_enabled",
             "early_sell_profit",
           ]);
@@ -409,12 +416,15 @@ export default function BotCenter() {
               Math.floor(Number(b.params?.min_seconds_between_trades ?? 0) || 0),
             ),
 
-            cooldown_after_loss: Math.max(0, Math.floor(Number(b.params?.cooldown_after_loss ?? 0) || 0)),
+            // ✅ NEW (clamp 0..600)
+            max_trades_per_minute: Math.min(
+              600,
+              Math.max(0, Math.floor(Number(b.params?.max_trades_per_minute ?? 0) || 0)),
+            ),
 
-            // ✅ NEW
+            cooldown_after_loss: Math.max(0, Math.floor(Number(b.params?.cooldown_after_loss ?? 0) || 0)),
             max_consecutive_losses: Math.max(0, Math.floor(Number(b.params?.max_consecutive_losses ?? 0) || 0)),
             pause_after_loss_minutes: Math.max(0, Math.floor(Number(b.params?.pause_after_loss_minutes ?? 0) || 0)),
-
             early_sell_enabled: Boolean(b.params?.early_sell_enabled ?? false),
             early_sell_profit: Number(b.params?.early_sell_profit ?? 0),
           };
@@ -577,12 +587,13 @@ export default function BotCenter() {
         max_open_trades: p.max_open_trades ?? 5,
 
         min_seconds_between_trades: Math.max(0, Math.floor(Number(p.min_seconds_between_trades ?? 0) || 0)),
-        cooldown_after_loss: Math.max(0, Math.floor(Number(p.cooldown_after_loss ?? 0) || 0)),
 
-        // ✅ NEW
+        // ✅ NEW (clamp 0..600)
+        max_trades_per_minute: Math.min(600, Math.max(0, Math.floor(Number(p.max_trades_per_minute ?? 0) || 0))),
+
+        cooldown_after_loss: Math.max(0, Math.floor(Number(p.cooldown_after_loss ?? 0) || 0)),
         max_consecutive_losses: Math.max(0, Math.floor(Number(p.max_consecutive_losses ?? 0) || 0)),
         pause_after_loss_minutes: Math.max(0, Math.floor(Number(p.pause_after_loss_minutes ?? 0) || 0)),
-
         early_sell_enabled: Boolean(p.early_sell_enabled ?? false),
         early_sell_profit: Number(p.early_sell_profit ?? 0),
       };
@@ -596,12 +607,13 @@ export default function BotCenter() {
           .concat([
             "max_open_trades",
             "min_seconds_between_trades",
-            "cooldown_after_loss",
 
             // ✅ NEW
+            "max_trades_per_minute",
+
+            "cooldown_after_loss",
             "max_consecutive_losses",
             "pause_after_loss_minutes",
-
             "early_sell_enabled",
             "early_sell_profit",
           ]),
@@ -1321,10 +1333,16 @@ function StrategySettingsModal({
         Math.floor(mt ?? (Number(params.min_seconds_between_trades ?? 0) || 0)),
       );
 
+      // ✅ NEW: max_trades_per_minute (clamp 0..600)
+      const tpm = parseNum(next.max_trades_per_minute);
+      next.max_trades_per_minute = Math.min(
+        600,
+        Math.max(0, Math.floor(tpm ?? (Number(params.max_trades_per_minute ?? 0) || 0))),
+      );
+
       const cd = parseNum(next.cooldown_after_loss);
       next.cooldown_after_loss = Math.max(0, Math.floor(cd ?? (Number(params.cooldown_after_loss ?? 0) || 0)));
 
-      // ✅ NEW: losing streak protection
       const mcl = parseNum(next.max_consecutive_losses);
       next.max_consecutive_losses = Math.max(0, Math.floor(mcl ?? (Number(params.max_consecutive_losses ?? 0) || 0)));
 
@@ -1531,6 +1549,23 @@ function StrategySettingsModal({
                 <div className="mt-1 text-xs text-muted-foreground">
                   Prevents new trade execution until this many seconds have passed since the last executed trade. Set to 0
                   to disable.
+                </div>
+              </div>
+
+              {/* ✅ NEW */}
+              <div>
+                <label className="block text-sm mb-1">Max trades per minute</label>
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  min={0}
+                  step={1}
+                  className="w-full rounded-lg border border-border bg-background px-3 py-2"
+                  value={form.max_trades_per_minute ?? ""}
+                  onChange={(e) => setForm({ ...form, max_trades_per_minute: e.target.value })}
+                />
+                <div className="mt-1 text-xs text-muted-foreground">
+                  Limits executions to this many trades in a rolling 60-second window. Set to 0 to disable.
                 </div>
               </div>
 
