@@ -50,6 +50,15 @@ type StrategyParams = {
   /** Tick volatility filter: skip if range > this. 0 disables max gate. */
   tick_range_max?: number;
 
+  /** Spike exhaustion: compute max-min move over last M ticks. */
+  spike_window_ticks?: number;
+
+  /** Spike exhaustion: trigger if move > this (absolute price units). 0 disables. */
+  spike_move_threshold?: number;
+
+  /** Spike exhaustion: pause execution for this many seconds once triggered. 0 disables. */
+  spike_pause_seconds?: number;
+
   /** Pause execution for N seconds after a losing trade (0 disables) */
   cooldown_after_loss?: number;
 
@@ -209,10 +218,14 @@ export default function BotCenter() {
     min_seconds_between_trades: 0,
     max_trades_per_minute: 0,
 
-    // ✅ NEW (tick volatility filter)
     tick_window: 30,
     tick_range_min: 0,
     tick_range_max: 0,
+
+    // ✅ NEW (spike exhaustion protection)
+    spike_window_ticks: 30,
+    spike_move_threshold: 0,
+    spike_pause_seconds: 0,
 
     cooldown_after_loss: 0,
 
@@ -407,11 +420,14 @@ export default function BotCenter() {
             "max_open_trades",
             "min_seconds_between_trades",
             "max_trades_per_minute",
-
-            // ✅ NEW
             "tick_window",
             "tick_range_min",
             "tick_range_max",
+
+            // ✅ NEW
+            "spike_window_ticks",
+            "spike_move_threshold",
+            "spike_pause_seconds",
 
             "cooldown_after_loss",
             "max_consecutive_losses",
@@ -436,10 +452,17 @@ export default function BotCenter() {
               Math.max(0, Math.floor(Number(b.params?.max_trades_per_minute ?? 0) || 0)),
             ),
 
-            // ✅ NEW (clamp window 5..500, ranges >= 0)
             tick_window: Math.min(500, Math.max(5, Math.floor(Number(b.params?.tick_window ?? 30) || 30))),
             tick_range_min: Math.max(0, Number(b.params?.tick_range_min ?? 0) || 0),
             tick_range_max: Math.max(0, Number(b.params?.tick_range_max ?? 0) || 0),
+
+            // ✅ NEW (clamps align with server: window 5..500, threshold/ranges >= 0, pause 0..3600)
+            spike_window_ticks: Math.min(500, Math.max(5, Math.floor(Number(b.params?.spike_window_ticks ?? 30) || 30))),
+            spike_move_threshold: Math.max(0, Number(b.params?.spike_move_threshold ?? 0) || 0),
+            spike_pause_seconds: Math.min(
+              3600,
+              Math.max(0, Math.floor(Number(b.params?.spike_pause_seconds ?? 0) || 0)),
+            ),
 
             cooldown_after_loss: Math.max(0, Math.floor(Number(b.params?.cooldown_after_loss ?? 0) || 0)),
             max_consecutive_losses: Math.max(0, Math.floor(Number(b.params?.max_consecutive_losses ?? 0) || 0)),
@@ -608,10 +631,14 @@ export default function BotCenter() {
         min_seconds_between_trades: Math.max(0, Math.floor(Number(p.min_seconds_between_trades ?? 0) || 0)),
         max_trades_per_minute: Math.min(600, Math.max(0, Math.floor(Number(p.max_trades_per_minute ?? 0) || 0))),
 
-        // ✅ NEW
         tick_window: Math.min(500, Math.max(5, Math.floor(Number(p.tick_window ?? 30) || 30))),
         tick_range_min: Math.max(0, Number(p.tick_range_min ?? 0) || 0),
         tick_range_max: Math.max(0, Number(p.tick_range_max ?? 0) || 0),
+
+        // ✅ NEW
+        spike_window_ticks: Math.min(500, Math.max(5, Math.floor(Number(p.spike_window_ticks ?? 30) || 30))),
+        spike_move_threshold: Math.max(0, Number(p.spike_move_threshold ?? 0) || 0),
+        spike_pause_seconds: Math.min(3600, Math.max(0, Math.floor(Number(p.spike_pause_seconds ?? 0) || 0))),
 
         cooldown_after_loss: Math.max(0, Math.floor(Number(p.cooldown_after_loss ?? 0) || 0)),
         max_consecutive_losses: Math.max(0, Math.floor(Number(p.max_consecutive_losses ?? 0) || 0)),
@@ -630,11 +657,14 @@ export default function BotCenter() {
             "max_open_trades",
             "min_seconds_between_trades",
             "max_trades_per_minute",
-
-            // ✅ NEW
             "tick_window",
             "tick_range_min",
             "tick_range_max",
+
+            // ✅ NEW
+            "spike_window_ticks",
+            "spike_move_threshold",
+            "spike_pause_seconds",
 
             "cooldown_after_loss",
             "max_consecutive_losses",
@@ -1364,7 +1394,7 @@ function StrategySettingsModal({
         Math.max(0, Math.floor(tpm ?? (Number(params.max_trades_per_minute ?? 0) || 0))),
       );
 
-      // ✅ NEW: tick volatility filter
+      // tick volatility filter
       const tw = parseNum(next.tick_window);
       next.tick_window = Math.min(
         500,
@@ -1376,6 +1406,22 @@ function StrategySettingsModal({
 
       const trMax = parseNum(next.tick_range_max);
       next.tick_range_max = Math.max(0, trMax ?? (Number(params.tick_range_max ?? 0) || 0));
+
+      // ✅ NEW: spike exhaustion protection
+      const sw = parseNum(next.spike_window_ticks);
+      next.spike_window_ticks = Math.min(
+        500,
+        Math.max(5, Math.floor(sw ?? (Number(params.spike_window_ticks ?? 30) || 30))),
+      );
+
+      const smt = parseNum(next.spike_move_threshold);
+      next.spike_move_threshold = Math.max(0, smt ?? (Number(params.spike_move_threshold ?? 0) || 0));
+
+      const sps = parseNum(next.spike_pause_seconds);
+      next.spike_pause_seconds = Math.min(
+        3600,
+        Math.max(0, Math.floor(sps ?? (Number(params.spike_pause_seconds ?? 0) || 0))),
+      );
 
       const cd = parseNum(next.cooldown_after_loss);
       next.cooldown_after_loss = Math.max(0, Math.floor(cd ?? (Number(params.cooldown_after_loss ?? 0) || 0)));
@@ -1753,6 +1799,65 @@ function StrategySettingsModal({
                     />
                     <div className="mt-1 text-xs text-muted-foreground">Skip execution if range is above this.</div>
                   </div>
+                </div>
+              </div>
+
+              {/* ✅ Spike exhaustion protection */}
+              <div className="rounded-xl border border-border bg-muted/20 p-3 space-y-3">
+                <div className="text-sm font-semibold">Spike exhaustion protection</div>
+
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div>
+                    <label className="block text-sm mb-1">Spike window (ticks)</label>
+                    <input
+                      type="number"
+                      inputMode="numeric"
+                      min={5}
+                      max={500}
+                      step={1}
+                      className="w-full rounded-lg border border-border bg-background px-3 py-2"
+                      value={form.spike_window_ticks ?? ""}
+                      onChange={(e) => setForm({ ...form, spike_window_ticks: e.target.value })}
+                    />
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      Detects extreme moves over the last M ticks (recommended 20–50).
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm mb-1">Pause after spike (sec)</label>
+                    <input
+                      type="number"
+                      inputMode="numeric"
+                      min={0}
+                      max={3600}
+                      step={1}
+                      className="w-full rounded-lg border border-border bg-background px-3 py-2"
+                      value={form.spike_pause_seconds ?? ""}
+                      onChange={(e) => setForm({ ...form, spike_pause_seconds: e.target.value })}
+                    />
+                    <div className="mt-1 text-xs text-muted-foreground">Set to 0 to disable.</div>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm mb-1">Spike move threshold</label>
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    min={0}
+                    step={0.01}
+                    className="w-full rounded-lg border border-border bg-background px-3 py-2"
+                    value={form.spike_move_threshold ?? ""}
+                    onChange={(e) => setForm({ ...form, spike_move_threshold: e.target.value })}
+                  />
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    If <span className="font-mono">max - min</span> over the window exceeds this, execution pauses.
+                  </div>
+                </div>
+
+                <div className="text-xs text-muted-foreground">
+                  Execution-only: signals still compute; entries are blocked immediately after extreme moves.
                 </div>
               </div>
 

@@ -51,6 +51,10 @@ export class BotManager {
   // cfgKey -> { quotes: number[] }
   private recentTickQuotesByCfgKey = new Map<string, { quotes: number[] }>();
 
+  // ✅ spike exhaustion protection (per run/config)
+  // cfgKey -> epochMs
+  private spikePauseUntilByCfgKey = new Map<string, number>();
+
   // ✅ throttle reconciliation per account (kept as accountId-keyed for backward behavior)
   private lastReconcileAt = new Map<string, number>();
 
@@ -430,6 +434,14 @@ export class BotManager {
       const prefix = `${userId}::${runId}::`;
       for (const k of Array.from(this.recentTickQuotesByCfgKey.keys())) {
         if (k.startsWith(prefix)) this.recentTickQuotesByCfgKey.delete(k);
+      }
+    }
+
+    // ✅ spike exhaustion pause state is keyed by run/config
+    {
+      const prefix = `${userId}::${runId}::`;
+      for (const k of Array.from(this.spikePauseUntilByCfgKey.keys())) {
+        if (k.startsWith(prefix)) this.spikePauseUntilByCfgKey.delete(k);
       }
     }
 
@@ -1019,6 +1031,90 @@ export class BotManager {
     }
   }
 
+  // ---- spike exhaustion protection helpers (runtime state) ----
+  private parseSpikeWindowTicks(cfg: BotConfig): number {
+    const raw = (cfg?.params as any)?.spike_window_ticks;
+    const n = typeof raw === "number" ? raw : raw === "" || raw == null ? NaN : Number(raw);
+    // default 30 ticks, clamp 5..500
+    const v = Number.isFinite(n) && n > 0 ? Math.floor(n) : 30;
+    return Math.min(500, Math.max(5, v));
+  }
+
+  private parseSpikeMoveThreshold(cfg: BotConfig): number {
+    const raw = (cfg?.params as any)?.spike_move_threshold;
+    const n = typeof raw === "number" ? raw : raw === "" || raw == null ? 0 : Number(raw);
+    // 0 disables
+    return Number.isFinite(n) ? Math.max(0, n) : 0;
+  }
+
+  private parseSpikePauseSeconds(cfg: BotConfig): number {
+    const raw = (cfg?.params as any)?.spike_pause_seconds;
+    const n = typeof raw === "number" ? raw : raw === "" || raw == null ? 0 : Number(raw);
+    // 0 disables; clamp to 0..1h
+    return Number.isFinite(n) ? Math.min(3600, Math.max(0, Math.floor(n))) : 0;
+  }
+
+  private getSpikePauseUntil(cfgKey: string): number {
+    return this.spikePauseUntilByCfgKey.get(cfgKey) ?? 0;
+  }
+
+  private isSpikePauseActive(cfgKey: string): { active: boolean; remainingMs: number } {
+    const until = this.getSpikePauseUntil(cfgKey);
+    const now = Date.now();
+    if (until > now) return { active: true, remainingMs: until - now };
+    return { active: false, remainingMs: 0 };
+  }
+
+  private startSpikePause(cfgKey: string, seconds: number) {
+    const sec = Math.max(0, Math.floor(seconds));
+    if (!sec) return;
+
+    const now = Date.now();
+    const nextUntil = now + sec * 1000;
+
+    // Extend if already paused
+    const prev = this.spikePauseUntilByCfgKey.get(cfgKey) ?? 0;
+    this.spikePauseUntilByCfgKey.set(cfgKey, Math.max(prev, nextUntil));
+  }
+
+  private getSpikeExhaustionGate(
+    cfgKey: string,
+    cfg: BotConfig,
+  ):
+    | { ok: true; triggered: false; move: number; window: number; threshold: number; pauseSec: number; quotesUsed: number }
+    | { ok: false; triggered: true; move: number; window: number; threshold: number; pauseSec: number; quotesUsed: number } {
+    const threshold = this.parseSpikeMoveThreshold(cfg);
+    const pauseSec = this.parseSpikePauseSeconds(cfg);
+    const window = this.parseSpikeWindowTicks(cfg);
+
+    // disabled unless both threshold+pause are set
+    if (!(threshold > 0) || !(pauseSec > 0)) {
+      return { ok: true, triggered: false, move: 0, window, threshold, pauseSec, quotesUsed: 0 };
+    }
+
+    const st = this.recentTickQuotesByCfgKey.get(cfgKey);
+    const arr = st?.quotes ?? [];
+    if (arr.length < window) {
+      // Fail-open until we have enough ticks
+      return { ok: true, triggered: false, move: 0, window, threshold, pauseSec, quotesUsed: arr.length };
+    }
+
+    const slice = arr.slice(-window);
+    let lo = Number.POSITIVE_INFINITY;
+    let hi = Number.NEGATIVE_INFINITY;
+    for (const q of slice) {
+      if (q < lo) lo = q;
+      if (q > hi) hi = q;
+    }
+    const move = Number.isFinite(hi) && Number.isFinite(lo) ? hi - lo : 0;
+
+    if (move > threshold) {
+      return { ok: false, triggered: true, move, window, threshold, pauseSec, quotesUsed: window };
+    }
+
+    return { ok: true, triggered: false, move, window, threshold, pauseSec, quotesUsed: window };
+  }
+
   // ---- tick volatility filter helpers (runtime state) ----
   private parseTickWindow(cfg: BotConfig): number {
     const raw = (cfg?.params as any)?.tick_window;
@@ -1115,8 +1211,12 @@ export class BotManager {
           if (cfg.symbol !== symbol) continue;
 
           const ck = this.cfgKey(bot, cfg);
-          const win = this.parseTickWindow(cfg);
-          this.pushTickQuote(ck, quote, win);
+
+          // ✅ keep enough ticks for BOTH:
+          // - tick range filter (tick_window)
+          // - spike exhaustion detection (spike_window_ticks)
+          const keepN = Math.max(this.parseTickWindow(cfg), this.parseSpikeWindowTicks(cfg));
+          this.pushTickQuote(ck, quote, keepN);
         }
 
         // keep existing throttled tick log behavior (only for users with matching symbol)
@@ -1273,6 +1373,37 @@ export class BotManager {
     if (signal.confidence < 0.5) return;
 
     const ck = this.cfgKey(bot, cfg);
+
+    // ✅ spike exhaustion pause gate (execution only; does not block signal generation)
+    const sp = this.isSpikePauseActive(ck);
+    if (sp.active) {
+      this.wsLog(bot.userId, "spike exhaustion pause active (skipping execution)", {
+        runId: bot.runId,
+        cfg_id: cfg.id,
+        symbol: cfg.symbol,
+        remaining_sec: Math.ceil(sp.remainingMs / 1000),
+        pauseUntil: new Date(this.getSpikePauseUntil(ck)).toISOString(),
+      });
+      return;
+    }
+
+    // ✅ detect extreme move in last M ticks; start pause if triggered (execution only)
+    const sg = this.getSpikeExhaustionGate(ck, cfg);
+    if (!sg.ok && sg.triggered) {
+      this.startSpikePause(ck, sg.pauseSec);
+      this.wsLog(bot.userId, "spike exhaustion triggered (pausing execution)", {
+        runId: bot.runId,
+        cfg_id: cfg.id,
+        symbol: cfg.symbol,
+        spike_window_ticks: sg.window,
+        spike_move_threshold: sg.threshold,
+        spike_pause_seconds: sg.pauseSec,
+        observed_move: sg.move,
+        quotes_used: sg.quotesUsed,
+        pauseUntil: new Date(this.getSpikePauseUntil(ck)).toISOString(),
+      });
+      return;
+    }
 
     // ✅ tick volatility filter gate (execution only; does not block signal generation)
     const tg = this.getTickRangeGate(ck, cfg);
