@@ -76,6 +76,10 @@ export class BotManager {
   // ✅ throttle noisy tick logs (per user+symbol)
   private lastTickLogAt = new Map<string, number>();
 
+  // ✅ Dedup state: one execution per candle/signal (per run/config)
+  // cfgKey -> `${lastCandleT}::${side}::${reason}`
+  private lastExecutedSignalKeyByCfgKey = new Map<string, string>();
+
   private runKey(userId: string, runId: string) {
     return `${userId}::${runId}`;
   }
@@ -442,6 +446,14 @@ export class BotManager {
       const prefix = `${userId}::${runId}::`;
       for (const k of Array.from(this.spikePauseUntilByCfgKey.keys())) {
         if (k.startsWith(prefix)) this.spikePauseUntilByCfgKey.delete(k);
+      }
+    }
+
+    // ✅ clear signal-dedupe state for this run
+    {
+      const prefix = `${userId}::${runId}::`;
+      for (const k of Array.from(this.lastExecutedSignalKeyByCfgKey.keys())) {
+        if (k.startsWith(prefix)) this.lastExecutedSignalKeyByCfgKey.delete(k);
       }
     }
 
