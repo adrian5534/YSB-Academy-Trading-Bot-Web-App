@@ -909,6 +909,40 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
     }),
   );
 
+  // ===== Logs (per-user) =====
+  router.get(
+    "/api/logs/list",
+    requireUser,
+    asyncRoute(async (req, res) => {
+      const r = req as AuthedRequest;
+      const limitRaw = Number(req.query.limit ?? 200);
+      const limit = Math.min(500, Math.max(1, Number.isFinite(limitRaw) ? Math.floor(limitRaw) : 200));
+
+      const { data, error } = await supabaseAdmin
+        .from("logs")
+        .select("id,message,meta,created_at")
+        .eq("user_id", r.user.id)
+        .order("created_at", { ascending: false })
+        .limit(limit);
+
+      if (error) throw error;
+      res.json(data ?? []);
+    }),
+  );
+
+  router.post(
+    "/api/logs/clear",
+    requireUser,
+    asyncRoute(async (req, res) => {
+      const r = req as AuthedRequest;
+
+      const { error } = await supabaseAdmin.from("logs").delete().eq("user_id", r.user.id);
+      if (error) throw error;
+
+      res.json({ ok: true });
+    }),
+  );
+  
   // ===== Settings: risk rules =====
   router.get(
     "/api/settings/risk",

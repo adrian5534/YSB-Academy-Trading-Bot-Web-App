@@ -534,25 +534,49 @@ export class BotManager {
   }
 
   // ✅ Emit helpers that scope to a single user (prevents cross-user log/status/trade leakage)
-  private wsLog(userId: string, message: string, meta?: Record<string, unknown>) {
-    const hub: any = this.hub as any;
-    const safeMeta = { ...(meta ?? {}), user_id: userId };
-
+  private redactMeta(meta: any) {
     try {
-      if (typeof hub?.log === "function") {
-        try {
-          hub.log(message, safeMeta, userId);
-          return;
-        } catch {}
-        try {
-          hub.log(userId, message, safeMeta);
-          return;
-        } catch {}
-        hub.log(message, safeMeta);
-      }
+      if (!meta || typeof meta !== "object") return meta;
+      const walk = (v: any): any => {
+        if (!v || typeof v !== "object") return v;
+        if (Array.isArray(v)) return v.map(walk);
+
+        const out: any = {};
+        for (const [k, val] of Object.entries(v)) {
+          if (/token|secret|password/i.test(k)) out[k] = "***";
+          else out[k] = walk(val);
+        }
+        return out;
+      };
+      return walk(meta);
     } catch {
-      // ignore
+      return meta;
     }
+  }
+
+  private async persistLogRow(userId: string, message: string, meta?: any) {
+    try {
+      // best-effort insert (never block bot loop)
+      await supabaseAdmin.from("logs").insert({
+        user_id: userId,
+        message,
+        meta: meta ?? null,
+        created_at: new Date().toISOString(),
+      });
+    } catch {
+      // ignore DB logging errors
+    }
+  }
+
+  private wsLog(userId: string, message: string, meta?: any) {
+    const ts = new Date().toISOString();
+    const safeMeta = this.redactMeta(meta);
+
+    // ...existing code that emits ws event "bot.log" to this user...
+    // e.g. this.hub.emit(userId, { type: "bot.log", payload: { message, ts, meta: safeMeta } });
+
+    // ✅ persist to Supabase (per-user)
+    void this.persistLogRow(userId, message, safeMeta);
   }
 
   private wsStatus(userId: string, payload: any) {
@@ -1544,9 +1568,7 @@ export class BotManager {
               const sellPrice = Number(snap?.sell_price ?? snap?.bid_price ?? 0);
               const profit = Number.isFinite(sellPrice) && Number.isFinite(buyPrice) ? sellPrice - buyPrice : 0;
               const closedAt =
-                snap?.is_sold && snap?.sell_time
-                  ? new Date(Number(snap.sell_time) * 1000).toISOString()
-                  : new Date().toISOString();
+                snap?.sell_time ? new Date(Number(snap.sell_time) * 1000).toISOString() : new Date().toISOString();
 
               if (tradeId) {
                 const { data: updated } = await supabaseAdmin
@@ -1823,7 +1845,7 @@ export class BotManager {
     if (!tg.ok) {
       this.wsLog(bot.userId, "tick range filter (skipping execution)", {
         runId: bot.runId,
-               cfg_id: cfg.id,
+        cfg_id: cfg.id,
         symbol: cfg.symbol,
         reason: tg.reason,
         tick_window: tg.window,
