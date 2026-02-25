@@ -554,15 +554,59 @@ export class BotManager {
     }
   }
 
+  // ✅ log retention settings
+  private static readonly LOG_RETENTION_DAYS = 7;
+  private static readonly LOG_MAX_PER_USER = 2000;
+  private static readonly LOG_PRUNE_THROTTLE_MS = 60_000;
+
+  // throttle pruning per user
+  private logPruneAtByUserId = new Map<string, number>();
+
+  private async pruneLogsForUser(userId: string) {
+    const now = Date.now();
+    const last = this.logPruneAtByUserId.get(userId) ?? 0;
+    if (now - last < BotManager.LOG_PRUNE_THROTTLE_MS) return;
+    this.logPruneAtByUserId.set(userId, now);
+
+    try {
+      // 1) time-based retention
+      const cutoff = new Date(now - BotManager.LOG_RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString();
+      await supabaseAdmin.from("logs").delete().eq("user_id", userId).lt("created_at", cutoff);
+
+      // 2) count-based retention (keep newest LOG_MAX_PER_USER)
+      // Fetch ids beyond the cap, then delete them.
+      const start = BotManager.LOG_MAX_PER_USER; // offset (0-based)
+      const end = start + 999; // prune up to 1000 at a time
+
+      const { data: extra, error: extraErr } = await supabaseAdmin
+        .from("logs")
+        .select("id")
+        .eq("user_id", userId)
+        .order("created_at", { ascending: false })
+        .range(start, end);
+
+      if (extraErr) return;
+
+      const ids = (extra ?? []).map((r: any) => r.id).filter(Boolean);
+      if (!ids.length) return;
+
+      await supabaseAdmin.from("logs").delete().in("id", ids);
+    } catch {
+      // best-effort only
+    }
+  }
+
   private async persistLogRow(userId: string, message: string, meta?: any) {
     try {
-      // best-effort insert (never block bot loop)
       await supabaseAdmin.from("logs").insert({
         user_id: userId,
         message,
         meta: meta ?? null,
         created_at: new Date().toISOString(),
       });
+
+      // ✅ prune old/excess logs (throttled)
+      void this.pruneLogsForUser(userId);
     } catch {
       // ignore DB logging errors
     }
@@ -1774,7 +1818,7 @@ export class BotManager {
               this.wsLog(bot.userId, "backtest persist error", { error: String(insertErr) });
             } else {
               for (const tr of inserted ?? []) this.wsTrade(bot.userId, tr);
-            }
+                       }
           } catch (e) {
             this.wsLog(bot.userId, "backtest persist exception", { error: String(e) });
           }
