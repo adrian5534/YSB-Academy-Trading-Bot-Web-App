@@ -67,7 +67,17 @@ export async function getRiskRules(userId: string): Promise<RiskRules> {
 }
 
 type CanOpenTradeOptions = {
-  max_open_trades?: number; // optional override (per-bot)
+  /**
+   * Per-bot override (e.g. from cfg.params.max_open_trades).
+   * If run_id is provided, this is enforced per run_id.
+   */
+  max_open_trades?: number;
+
+  /**
+   * Bot/run identifier. When provided, open trade count is filtered by trades.meta.run_id.
+   * (Requires BotManager to store meta.run_id on trade inserts.)
+   */
+  run_id?: string;
 };
 
 const toFiniteNumberOrUndefined = (v: unknown): number | undefined => {
@@ -101,22 +111,41 @@ export async function canOpenTrade(
     return { ok: false, reason: "max daily loss reached" };
   }
 
-  const { count, error: countError } = await supabaseAdmin
+  // Count total open trades (global safety cap)
+  const { count: totalOpen, error: totalCountError } = await supabaseAdmin
     .from("trades")
     .select("id", { count: "exact", head: true })
     .eq("user_id", userId)
     .is("closed_at", null);
 
-  if (countError) throw countError;
+  if (totalCountError) throw totalCountError;
 
-  // Prefer per-bot override, else global rule
-  const override = toFiniteNumberOrUndefined(opts.max_open_trades);
   const globalLimit = toFiniteNumberOrUndefined((rules as any)?.max_open_trades);
-  const limit = override ?? globalLimit;
+  if (typeof globalLimit === "number" && globalLimit > 0) {
+    if ((totalOpen ?? 0) >= globalLimit) return { ok: false, reason: "max open trades reached" };
+  }
 
-  // ✅ treat undefined / <= 0 as “disabled”
-  if (typeof limit === "number" && limit > 0) {
-    if ((count ?? 0) >= limit) return { ok: false, reason: "max open trades reached" };
+  // Per-bot (run) cap (lets other bots open trades)
+  const override = toFiniteNumberOrUndefined(opts.max_open_trades);
+  if (typeof override === "number" && override > 0) {
+    const runId = String(opts.run_id ?? "").trim();
+
+    if (!runId) {
+      // No run_id -> fallback to counting all open trades (legacy behavior)
+      if ((totalOpen ?? 0) >= override) return { ok: false, reason: "max open trades reached" };
+      return { ok: true };
+    }
+
+    const { count: runOpen, error: runCountError } = await supabaseAdmin
+      .from("trades")
+      .select("id", { count: "exact", head: true })
+      .eq("user_id", userId)
+      .is("closed_at", null)
+      .contains("meta", { run_id: runId });
+
+    if (runCountError) throw runCountError;
+
+    if ((runOpen ?? 0) >= override) return { ok: false, reason: "max open trades reached" };
   }
 
   return { ok: true };

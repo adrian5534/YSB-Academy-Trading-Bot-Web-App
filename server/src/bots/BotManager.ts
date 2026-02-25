@@ -1418,11 +1418,17 @@ export class BotManager {
       const lp = this.isLossPauseActive(ck);
       if (lp.active) return;
 
-      const maxOpenTrades = Math.max(1, Number(cfg.params?.max_open_trades ?? 5));
+      const maxOpenTrades = this.parseCfgMaxOpenTrades(cfg);
       const currentOpen = this.getOpenCount(bot, cfg);
       if (currentOpen >= maxOpenTrades) return;
 
-      const gate = await canOpenTrade(bot.userId, { max_open_trades: maxOpenTrades });
+      // ✅ DB/risk gate should NOT be per-config (that blocks other bots).
+      // Use a global cap equal to sum of enabled bots' max_open_trades.
+      const globalCap = this.computeUserGlobalOpenTradesCap(bot.userId);
+      const gate = await canOpenTrade(bot.userId, {
+        max_open_trades: maxOpenTrades,
+        run_id: bot.runId, // ✅ per-bot
+      });
       if (!gate.ok) return;
 
       const rules = await getRiskRules(bot.userId);
@@ -1503,6 +1509,10 @@ export class BotManager {
                 duration_unit: durUnit,
                 early_sell_enabled: earlyEnabled,
                 early_sell_profit: earlyEnabled ? earlyProfit : 0,
+
+                // ✅ NEW: attribute trade to this bot/run (per-card in your UI)
+                run_id: bot.runId,
+                cfg_id: cfg.id,
               },
             })
             .select("*")
@@ -1813,7 +1823,7 @@ export class BotManager {
     if (!tg.ok) {
       this.wsLog(bot.userId, "tick range filter (skipping execution)", {
         runId: bot.runId,
-        cfg_id: cfg.id,
+               cfg_id: cfg.id,
         symbol: cfg.symbol,
         reason: tg.reason,
         tick_window: tg.window,
@@ -1897,9 +1907,17 @@ export class BotManager {
     }
 
     // ✅ also apply the same limit to the global risk gate
-    const gate = await canOpenTrade(bot.userId, { max_open_trades: maxOpenTrades });
+    const globalCap = this.computeUserGlobalOpenTradesCap(bot.userId);
+    const gate = await canOpenTrade(bot.userId, {
+      max_open_trades: maxOpenTrades,
+      run_id: bot.runId, // ✅ per-bot
+    });
     if (!gate.ok) {
-      this.wsLog(bot.userId, "risk block", { reason: gate.reason, symbol: cfg.symbol });
+      this.wsLog(bot.userId, "risk block", {
+        reason: gate.reason,
+        symbol: cfg.symbol,
+        global_max_open_trades: globalCap,
+      });
       return;
     }
 
@@ -1997,6 +2015,10 @@ export class BotManager {
               duration_unit: durUnit,
               early_sell_enabled: earlyEnabled,
               early_sell_profit: earlyEnabled ? earlyProfit : 0,
+
+              // ✅ NEW: attribute trade to this bot/run (per-card in your UI)
+              run_id: bot.runId,
+              cfg_id: cfg.id,
             },
           })
           .select("*")
@@ -2143,6 +2165,32 @@ export class BotManager {
       // ✅ schedule a forced reconcile after config change (best-effort)
       this.scheduleReconcileSoon(userId, accountId, 500);
     }
+  }
+
+  private parseCfgMaxOpenTrades(cfg: BotConfig): number {
+    const raw = (cfg?.params as any)?.max_open_trades;
+    const n = typeof raw === "number" ? raw : raw == null || raw === "" ? 5 : Number(raw);
+    const v = Number.isFinite(n) ? Math.floor(n) : 5;
+    // clamp 1..100 (per config)
+    return Math.min(100, Math.max(1, v));
+  }
+
+  // ✅ Global cap used only for DB-based safety gate (canOpenTrade).
+  // Make it "per bot" by summing each enabled config's max_open_trades.
+  private computeUserGlobalOpenTradesCap(userId: string): number {
+    let sum = 0;
+
+    for (const run of this.runs.values()) {
+      if (run.userId !== userId) continue;
+      for (const cfg of run.configs) {
+        if (!cfg.enabled) continue;
+        sum += this.parseCfgMaxOpenTrades(cfg);
+      }
+    }
+
+    // fail-safe clamp (prevents runaway caps if user starts many bots)
+    if (!sum) sum = 1;
+    return Math.min(500, Math.max(1, sum));
   }
 }
 
