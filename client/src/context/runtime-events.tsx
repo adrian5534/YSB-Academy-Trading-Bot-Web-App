@@ -1,6 +1,6 @@
 import React from "react";
-import { supabase } from "@/lib/supabase";
 import { apiFetch } from "@/lib/api";
+import { supabase } from "@/lib/supabase";
 import { connectWs } from "@/lib/ws";
 
 type RuntimeState = {
@@ -32,15 +32,15 @@ export function RuntimeEventsProvider({ children }: { children: React.ReactNode 
   const [trades, setTrades] = React.useState<any[]>([]);
 
   const wsRef = React.useRef<WebSocket | null>(null);
+  const pollRef = React.useRef<number | null>(null);
+  const startSeqRef = React.useRef(0);
 
   const fetchLogs = React.useCallback(async () => {
     try {
       const r = await apiFetch(`/api/logs/list?limit=${MAX_LOGS}`);
       if (!r.ok) return;
-
       const rows = (await r.json()) as any[];
-      // server returns newest first (order desc) -> keep newest first in state
-      setLogs(mapRowsToLogs(rows).slice(0, MAX_LOGS));
+      setLogs(mapRowsToLogs(rows).slice(0, MAX_LOGS)); // newest-first
     } catch {
       // ignore
     }
@@ -48,12 +48,11 @@ export function RuntimeEventsProvider({ children }: { children: React.ReactNode 
 
   React.useEffect(() => {
     let alive = true;
-    let pollTimer: number | null = null;
 
     const stop = () => {
-      if (pollTimer) {
-        window.clearInterval(pollTimer);
-        pollTimer = null;
+      if (pollRef.current) {
+        window.clearInterval(pollRef.current);
+        pollRef.current = null;
       }
       try {
         wsRef.current?.close();
@@ -79,8 +78,6 @@ export function RuntimeEventsProvider({ children }: { children: React.ReactNode 
           ts: String(p.ts ?? new Date().toISOString()),
           meta: p.meta ?? undefined,
         };
-
-        // keep newest first (so BotCenter shows it immediately)
         setLogs((prev) => [item, ...(prev ?? [])].slice(0, MAX_LOGS));
         return;
       }
@@ -91,49 +88,34 @@ export function RuntimeEventsProvider({ children }: { children: React.ReactNode 
     };
 
     const start = async () => {
+      const seq = ++startSeqRef.current;
       stop();
 
       const { data } = await supabase.auth.getSession();
       const token = data?.session?.access_token;
       if (!alive) return;
+      if (seq !== startSeqRef.current) return;
 
-      if (!token) {
-        // not signed in yet
-        return;
-      }
+      if (!token) return;
 
-      // ✅ Always load persisted logs when we (re)start
+      // load persisted logs immediately
       void fetchLogs();
 
-      // ✅ Poll logs so UI keeps updating even if WS disconnects
-      pollTimer = window.setInterval(() => void fetchLogs(), POLL_MS);
+      // poll so the UI updates even if WS is unavailable
+      pollRef.current = window.setInterval(() => void fetchLogs(), POLL_MS);
 
-      // ✅ Keep websocket for immediate "live" logs
+      // websocket for instant logs
       const ws = connectWs(onWsEvent as any, token);
       wsRef.current = ws;
 
-      ws.addEventListener("open", () => {
-        if (!alive) return;
-        setConnected(true);
-      });
-
-      ws.addEventListener("close", () => {
-        if (!alive) return;
-        setConnected(false);
-      });
-
-      ws.addEventListener("error", () => {
-        if (!alive) return;
-        setConnected(false);
-      });
+      ws.addEventListener("open", () => alive && setConnected(true));
+      ws.addEventListener("close", () => alive && setConnected(false));
+      ws.addEventListener("error", () => alive && setConnected(false));
     };
 
-    // Start once
-    void start();
-
-    // Don’t clear logs on token refresh; only on sign-out
     const { data: sub } = supabase.auth.onAuthStateChange((event) => {
       if (!alive) return;
+
       if (event === "SIGNED_OUT") {
         stop();
         setBotStatus(null);
@@ -141,9 +123,12 @@ export function RuntimeEventsProvider({ children }: { children: React.ReactNode 
         setTrades([]);
         return;
       }
-      // SIGNED_IN / TOKEN_REFRESHED -> restart (keeps logs from DB)
+
+      // SIGNED_IN / TOKEN_REFRESHED
       void start();
     });
+
+    void start();
 
     return () => {
       alive = false;

@@ -615,28 +615,31 @@ export class BotManager {
   private wsLog(userId: string, message: string, meta?: any) {
     const ts = new Date().toISOString();
     const safeMeta = this.redactMeta(meta);
+    const payload = { message, ts, meta: safeMeta };
 
-    // ...existing code that emits ws event "bot.log" to this user...
-    // e.g. this.hub.emit(userId, { type: "bot.log", payload: { message, ts, meta: safeMeta } });
-
-    // ✅ persist to Supabase (per-user)
-    void this.persistLogRow(userId, message, safeMeta);
-  }
-
-  private wsStatus(userId: string, payload: any) {
+    // ✅ emit to websocket (best-effort, supports different hub implementations)
     const hub: any = this.hub as any;
     try {
-      if (typeof hub?.status === "function") {
+      if (typeof hub?.log === "function") {
         try {
-          hub.status(payload, userId);
-          return;
+          hub.log(payload, userId);
         } catch {
-          hub.status(payload);
+          hub.log(payload);
+        }
+      } else if (typeof hub?.emit === "function") {
+        // fallback generic emitter
+        try {
+          hub.emit(userId, { type: "bot.log", payload });
+        } catch {
+          /* ignore */
         }
       }
     } catch {
       // ignore
     }
+
+    // ✅ persist to Supabase (per-user) + prune
+    void this.persistLogRow(userId, message, safeMeta);
   }
 
   private wsTrade(userId: string, trade: any) {
