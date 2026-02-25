@@ -658,6 +658,32 @@ export class BotManager {
     }
   }
 
+  private wsStatus(userId: string, status: any) {
+    const hub: any = this.hub as any;
+
+    try {
+      if (typeof hub?.status === "function") {
+        try {
+          hub.status(status, userId);
+          return;
+        } catch {
+          hub.status(status);
+          return;
+        }
+      }
+
+      if (typeof hub?.emit === "function") {
+        try {
+          hub.emit(userId, { type: "bot.status", payload: status });
+        } catch {
+          /* ignore */
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
   // Status with per-run list
   getStatus(userId: string) {
     const runs = Array.from(this.runs.values())
