@@ -86,10 +86,12 @@ const toFiniteNumberOrUndefined = (v: unknown): number | undefined => {
   return Number.isFinite(n) ? n : undefined;
 };
 
-export async function canOpenTrade(
-  userId: string,
-  opts: CanOpenTradeOptions = {},
-): Promise<{ ok: boolean; reason?: string }> {
+export async function canOpenTrade(args: {
+  userId: string;
+  opts: CanOpenTradeOptions;
+}): Promise<{ ok: boolean; reason?: string }> {
+  const { userId } = args;
+
   const rules = await getRiskRules(userId);
 
   // realized PnL since UTC day start
@@ -126,9 +128,9 @@ export async function canOpenTrade(
   }
 
   // Per-bot (run) cap (lets other bots open trades)
-  const override = toFiniteNumberOrUndefined(opts.max_open_trades);
+  const override = toFiniteNumberOrUndefined(args.opts.max_open_trades);
   if (typeof override === "number" && override > 0) {
-    const runId = String(opts.run_id ?? "").trim();
+    const runId = String(args.opts.run_id ?? "").trim();
 
     if (!runId) {
       // No run_id -> fallback to counting all open trades (legacy behavior)
@@ -147,6 +149,16 @@ export async function canOpenTrade(
 
     if ((runOpen ?? 0) >= override) return { ok: false, reason: "max open trades reached" };
   }
+
+  // ✅ IMPORTANT:
+  // We no longer enforce a GLOBAL max_open_trades here.
+  // Open-trade limiting is now handled PER BOT via cfg.params.max_open_trades in BotManager.
+  //
+  // (Old behavior was something like:)
+  // if ((rules.max_open_trades ?? 0) > 0) {
+  //   const openCount = await countOpenTradesForUser(userId);
+  //   if (openCount >= rules.max_open_trades) return { ok: false, reason: "max_open_trades" };
+  // }
 
   return { ok: true };
 }

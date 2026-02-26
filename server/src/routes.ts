@@ -30,7 +30,7 @@ const zRiskRules = z.object({
   percent_risk: z.number().min(0).max(100).default(1),
   max_daily_loss: z.number().min(0).default(0),
   max_drawdown: z.number().min(0).default(0),
-  max_open_trades: z.number().int().min(0).default(1),
+  max_open_trades: z.number().int().min(0).default(0),
   adaptive_enabled: z.boolean().default(false),
   adaptive_min_percent: z.number().min(0).default(0),
   adaptive_max_percent: z.number().min(0).default(0),
