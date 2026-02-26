@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 import { useTrades } from "@/hooks/use-trades";
 import { apiFetch } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
@@ -50,13 +50,15 @@ export function TradeHistory({
   const [snapById, setSnapById] = useState<Record<string, LiveSnap>>({});
   const [sellingId, setSellingId] = useState<string | null>(null);
 
+  const lastPollAtRef = useRef<number>(0);
+
   const filteredTrades = useMemo(() => {
     return (trades ?? [])
       .filter((t) => (mode === "all" ? true : String(t?.mode ?? "").toLowerCase() === mode))
       .filter((t) => (accountId ? String(t?.account_id ?? "") === String(accountId) : true));
   }, [trades, mode, accountId]);
 
-  // Poll live profit for OPEN live trades (best-effort)
+  // Poll live profit for OPEN live trades (best-effort) - no overlapping requests
   useEffect(() => {
     const openLive = filteredTrades
       .filter((t) => String(t?.mode ?? "").toLowerCase() === "live")
@@ -66,39 +68,66 @@ export function TradeHistory({
     if (openLive.length === 0) return;
 
     let alive = true;
-    let timer: any = null;
+    let controller: AbortController | null = null;
 
-    const poll = async () => {
-      try {
-        const qs = new URLSearchParams();
-        qs.set("limit", "25");
-        if (accountId) qs.set("account_id", String(accountId));
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-        const r = await apiFetch(`/api/trades/open/snap?${qs.toString()}`);
-        if (!r.ok) return;
+    const loop = async () => {
+      while (alive) {
+        // Optional: reduce noise when tab is hidden
+        if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+          await sleep(2000);
+          continue;
+        }
 
-        const snaps = (await r.json()) as LiveSnap[];
-        if (!alive || !Array.isArray(snaps)) return;
+        const started = Date.now();
+        lastPollAtRef.current = started;
 
-        setSnapById((prev) => {
-          const next = { ...(prev ?? {}) };
-          for (const s of snaps) {
-            if (!s?.id) continue;
-            next[String(s.id)] = s;
+        try {
+          // Abort any in-flight poll before starting a new one
+          controller?.abort();
+          controller = new AbortController();
+
+          const qs = new URLSearchParams();
+          qs.set("limit", "25");
+          if (accountId) qs.set("account_id", String(accountId));
+
+          // Cache-bust to avoid any intermediate caching layers
+          qs.set("_t", String(Date.now()));
+
+          const r = await apiFetch(`/api/trades/open/snap?${qs.toString()}`, {
+            signal: controller.signal as any,
+          } as any);
+
+          if (r.ok) {
+            const snaps = (await r.json()) as LiveSnap[];
+            if (alive && Array.isArray(snaps)) {
+              setSnapById((prev) => {
+                const next = { ...(prev ?? {}) };
+                for (const s of snaps) {
+                  if (!s?.id) continue;
+                  next[String(s.id)] = s;
+                }
+                return next;
+              });
+            }
           }
-          return next;
-        });
-      } catch {
-        // ignore
+        } catch {
+          // ignore
+        }
+
+        // Keep roughly a 2s cadence, but never overlap
+        const elapsed = Date.now() - started;
+        const wait = Math.max(600, 2000 - elapsed);
+        await sleep(wait);
       }
     };
 
-    void poll();
-    timer = setInterval(poll, 2000);
+    void loop();
 
     return () => {
       alive = false;
-      if (timer) clearInterval(timer);
+      controller?.abort();
     };
   }, [filteredTrades, accountId]);
 

@@ -44,6 +44,30 @@ function asyncRoute(fn: AnyFn) {
   return (req: any, res: any, next: any) => Promise.resolve(fn(req, res, next)).catch(next);
 }
 
+// ✅ small concurrency limiter (no deps) to prevent slow sequential Deriv calls
+function createLimiter(max: number) {
+  let active = 0;
+  const queue: Array<() => void> = [];
+
+  const releaseNext = () => {
+    const fn = queue.shift();
+    if (fn) fn();
+  };
+
+  return async function limit<T>(task: () => Promise<T>): Promise<T> {
+    if (active >= max) {
+      await new Promise<void>((resolve) => queue.push(resolve));
+    }
+    active++;
+    try {
+      return await task();
+    } finally {
+      active--;
+      releaseNext();
+    }
+  };
+}
+
 async function ensureProfile(userId: string, email: string | null) {
   await supabaseAdmin.from("profiles").upsert({ id: userId, email }, { onConflict: "id" });
   await supabaseAdmin.from("subscriptions").upsert({ user_id: userId }, { onConflict: "user_id" });
@@ -903,20 +927,25 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
         byAccount.set(aid, [...(byAccount.get(aid) ?? []), t]);
       }
 
+      // ✅ batch fetch accounts (avoid N+1 queries)
+      const accountIds = Array.from(byAccount.keys());
+      const { data: accounts, error: accErr } = await supabaseAdmin
+        .from("accounts")
+        .select("id,type,secrets")
+        .eq("user_id", r.user.id)
+        .in("id", accountIds);
+
+      if (accErr) throw accErr;
+
+      const accById = new Map<string, any>();
+      for (const a of accounts ?? []) accById.set(String((a as any).id), a);
+
       const out: any[] = [];
 
-      // best-effort: one Deriv client per account
+      // best-effort: one Deriv client per account, but fetch open_contract concurrently (capped)
       for (const [accountId, list] of byAccount.entries()) {
-        // load + decrypt token
-        const { data: acc, error: accErr } = await supabaseAdmin
-          .from("accounts")
-          .select("type,secrets")
-          .eq("id", accountId)
-          .eq("user_id", r.user.id)
-          .maybeSingle();
-
-        if (accErr || !acc) continue;
-        if (acc.type !== "deriv") continue;
+        const acc = accById.get(String(accountId));
+        if (!acc || acc.type !== "deriv") continue;
 
         const derivEnc = (acc as any)?.secrets?.deriv_token_enc;
         const dec = derivEnc ? safeDecrypt<any>(derivEnc) : null;
@@ -924,28 +953,40 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
         if (!token) continue;
 
         const c = new DerivClient(token);
+
+        // Tune if needed (4..10). Higher = faster, but more load / rate-limit risk.
+        const limitDerivCalls = createLimiter(6);
+
         try {
           await (c as any).connect?.().catch(() => void 0);
 
-          for (const tr of list.slice(0, limit)) {
-            const tradeId = String((tr as any).id);
-            const contractId = Number((tr as any)?.meta?.contract_id ?? 0);
-            if (!tradeId || !contractId) continue;
+          const batch = list.slice(0, limit);
 
-            const snap = await c.openContract(contractId).catch(() => null);
-            if (!snap) continue;
+          const snaps = await Promise.all(
+            batch.map((tr) =>
+              limitDerivCalls(async () => {
+                const tradeId = String((tr as any).id);
+                const contractId = Number((tr as any)?.meta?.contract_id ?? 0);
+                if (!tradeId || !contractId) return null;
 
-            out.push({
-              id: tradeId,
-              contract_id: contractId,
-              profit_now: Number(snap?.profit ?? 0),
-              bid_price: snap?.bid_price ?? null,
-              sell_price: snap?.sell_price ?? null,
-              is_sold: Boolean(snap?.is_sold),
-              is_valid_to_sell: snap?.is_valid_to_sell ?? null,
-              updated_at: new Date().toISOString(),
-            });
-          }
+                const snap = await c.openContract(contractId).catch(() => null);
+                if (!snap) return null;
+
+                return {
+                  id: tradeId,
+                  contract_id: contractId,
+                  profit_now: Number(snap?.profit ?? 0),
+                  bid_price: snap?.bid_price ?? null,
+                  sell_price: snap?.sell_price ?? null,
+                  is_sold: Boolean(snap?.is_sold),
+                  is_valid_to_sell: snap?.is_valid_to_sell ?? null,
+                  updated_at: new Date().toISOString(),
+                };
+              }),
+            ),
+          );
+
+          for (const s of snaps) if (s) out.push(s);
         } finally {
           await (c as any).disconnect?.().catch(() => void 0);
         }
@@ -1021,10 +1062,12 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
         const snap = await c.openContract(contractId).catch(() => null);
         const sellPrice = Number(snap?.sell_price ?? snap?.bid_price ?? 0);
         const buyPrice = Number((tr as any)?.entry ?? 0);
-        const profit = Number.isFinite(sellPrice) && Number.isFinite(buyPrice) ? sellPrice - buyPrice : Number(snap?.profit ?? 0);
+        const profit =
+          Number.isFinite(sellPrice) && Number.isFinite(buyPrice) ? sellPrice - buyPrice : Number(snap?.profit ?? 0);
 
-        const closedAt =
-          snap?.sell_time ? new Date(Number(snap.sell_time) * 1000).toISOString() : new Date().toISOString();
+        const closedAt = snap?.sell_time
+          ? new Date(Number(snap.sell_time) * 1000).toISOString()
+          : new Date().toISOString();
 
         const nextMeta = {
           ...(((tr as any)?.meta ?? {}) as any),
@@ -1313,7 +1356,11 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
         .select("id,email,role,created_at")
         .order("created_at", { ascending: false })
         .limit(50);
-      const subs = await supabaseAdmin.from("subscriptions").select("*").order("updated_at", { ascending: false }).limit(50);
+      const subs = await supabaseAdmin
+        .from("subscriptions")
+        .select("*")
+        .order("updated_at", { ascending: false })
+        .limit(50);
       const logs = await supabaseAdmin.from("logs").select("*").order("created_at", { ascending: false }).limit(50);
 
       res.json({ users: users.data, subscriptions: subs.data, logs: logs.data });
