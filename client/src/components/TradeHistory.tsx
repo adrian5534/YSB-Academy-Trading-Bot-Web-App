@@ -151,9 +151,7 @@ export function TradeHistory({
   };
 
   const sellEarly = async (tradeId: string) => {
-    const ok = window.confirm("Sell this trade early? This will close it immediately if the broker allows resale.");
-    if (!ok) return;
-
+    // ✅ no confirm dialog — just sell
     try {
       setSellingId(tradeId);
       const r = await apiFetch(`/api/trades/${tradeId}/sell-early`, { method: "POST" });
