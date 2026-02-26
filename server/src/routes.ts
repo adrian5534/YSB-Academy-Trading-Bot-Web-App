@@ -856,22 +856,6 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
     }),
   );
 
-  router.get(
-    api.trades.list.path,
-    requireUser,
-    asyncRoute(async (req, res) => {
-      const r = req as AuthedRequest;
-      const { data, error } = await supabaseAdmin
-        .from("trades")
-        .select("*")
-        .eq("user_id", r.user.id)
-        .order("opened_at", { ascending: false })
-        .limit(200);
-      if (error) throw error;
-      res.json(api.trades.list.responses[200].parse(data));
-    }),
-  );
-
   /**
    * ✅ Live profit snapshot for OPEN live trades.
    * Returns lightweight per-trade profit/bid/sellability from Deriv open_contract.
@@ -1077,7 +1061,7 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
         .order("created_at", { ascending: false })
         .limit(200);
       if (error) throw error;
-      res.json(api.journals.list.responses[200].parse(data));
+      res.json(api.journals.list.responses[200].parse(data ?? []));
     }),
   );
 
@@ -1150,7 +1134,7 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
       res.json({ ok: true });
     }),
   );
-  
+
   // ===== Settings: risk rules =====
   router.get(
     "/api/settings/risk",
