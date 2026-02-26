@@ -856,6 +856,214 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
     }),
   );
 
+  router.get(
+    api.trades.list.path,
+    requireUser,
+    asyncRoute(async (req, res) => {
+      const r = req as AuthedRequest;
+      const { data, error } = await supabaseAdmin
+        .from("trades")
+        .select("*")
+        .eq("user_id", r.user.id)
+        .order("opened_at", { ascending: false })
+        .limit(200);
+      if (error) throw error;
+      res.json(api.trades.list.responses[200].parse(data));
+    }),
+  );
+
+  /**
+   * ✅ Live profit snapshot for OPEN live trades.
+   * Returns lightweight per-trade profit/bid/sellability from Deriv open_contract.
+   *
+   * Query:
+   * - limit (1..50)
+   * - account_id (optional)
+   */
+  router.get(
+    "/api/trades/open/snap",
+    requireUser,
+    asyncRoute(async (req, res) => {
+      res.set("Cache-Control", "no-store");
+      const r = req as AuthedRequest;
+
+      const limitRaw = Number(req.query.limit ?? 25);
+      const limit = Math.min(50, Math.max(1, Number.isFinite(limitRaw) ? Math.floor(limitRaw) : 25));
+      const accountIdFilter = req.query.account_id ? String(req.query.account_id) : "";
+
+      let q = supabaseAdmin
+        .from("trades")
+        .select("id, account_id, entry, meta, opened_at")
+        .eq("user_id", r.user.id)
+        .eq("mode", "live")
+        .is("closed_at", null)
+        .order("opened_at", { ascending: false })
+        .limit(limit);
+
+      if (accountIdFilter) q = q.eq("account_id", accountIdFilter);
+
+      const { data: openTrades, error } = await q;
+      if (error) throw error;
+
+      const trades = (openTrades ?? []).filter((t: any) => {
+        const cid = Number(t?.meta?.contract_id ?? 0);
+        return Boolean(t?.account_id) && Number.isFinite(cid) && cid > 0;
+      });
+
+      if (!trades.length) return res.json([]);
+
+      // group by account_id
+      const byAccount = new Map<string, any[]>();
+      for (const t of trades) {
+        const aid = String((t as any).account_id);
+        byAccount.set(aid, [...(byAccount.get(aid) ?? []), t]);
+      }
+
+      const out: any[] = [];
+
+      // best-effort: one Deriv client per account
+      for (const [accountId, list] of byAccount.entries()) {
+        // load + decrypt token
+        const { data: acc, error: accErr } = await supabaseAdmin
+          .from("accounts")
+          .select("type,secrets")
+          .eq("id", accountId)
+          .eq("user_id", r.user.id)
+          .maybeSingle();
+
+        if (accErr || !acc) continue;
+        if (acc.type !== "deriv") continue;
+
+        const derivEnc = (acc as any)?.secrets?.deriv_token_enc;
+        const dec = derivEnc ? safeDecrypt<any>(derivEnc) : null;
+        const token = String(dec?.token ?? "");
+        if (!token) continue;
+
+        const c = new DerivClient(token);
+        try {
+          await (c as any).connect?.().catch(() => void 0);
+
+          for (const tr of list.slice(0, limit)) {
+            const tradeId = String((tr as any).id);
+            const contractId = Number((tr as any)?.meta?.contract_id ?? 0);
+            if (!tradeId || !contractId) continue;
+
+            const snap = await c.openContract(contractId).catch(() => null);
+            if (!snap) continue;
+
+            out.push({
+              id: tradeId,
+              contract_id: contractId,
+              profit_now: Number(snap?.profit ?? 0),
+              bid_price: snap?.bid_price ?? null,
+              sell_price: snap?.sell_price ?? null,
+              is_sold: Boolean(snap?.is_sold),
+              is_valid_to_sell: snap?.is_valid_to_sell ?? null,
+              updated_at: new Date().toISOString(),
+            });
+          }
+        } finally {
+          await (c as any).disconnect?.().catch(() => void 0);
+        }
+      }
+
+      res.json(out);
+    }),
+  );
+
+  /**
+   * ✅ Manual early-sell for a live trade (must be OPEN and have meta.contract_id).
+   * POST /api/trades/:id/sell-early
+   */
+  router.post(
+    "/api/trades/:id/sell-early",
+    requireUser,
+    requireProForPaperLive,
+    asyncRoute(async (req, res) => {
+      res.set("Cache-Control", "no-store");
+      const r = req as AuthedRequest;
+      const tradeId = String(req.params.id ?? "").trim();
+      if (!tradeId) return res.status(400).json({ error: "trade_id_required" });
+
+      // load trade
+      const { data: tr, error: trErr } = await supabaseAdmin
+        .from("trades")
+        .select("*")
+        .eq("id", tradeId)
+        .eq("user_id", r.user.id)
+        .maybeSingle();
+
+      if (trErr) throw trErr;
+      if (!tr) return res.status(404).json({ error: "not_found" });
+
+      if (String((tr as any).mode ?? "").toLowerCase() !== "live") {
+        return res.status(400).json({ error: "invalid_mode" });
+      }
+      if ((tr as any).closed_at) {
+        return res.status(400).json({ error: "already_closed" });
+      }
+
+      const accountId = String((tr as any).account_id ?? "");
+      const contractId = Number((tr as any)?.meta?.contract_id ?? 0);
+      if (!accountId || !Number.isFinite(contractId) || contractId <= 0) {
+        return res.status(400).json({ error: "missing_contract_id" });
+      }
+
+      // load + decrypt account token
+      const { data: acc, error: accErr } = await supabaseAdmin
+        .from("accounts")
+        .select("type,secrets")
+        .eq("id", accountId)
+        .eq("user_id", r.user.id)
+        .maybeSingle();
+
+      if (accErr) throw accErr;
+      if (!acc || acc.type !== "deriv") return res.status(400).json({ error: "invalid_account" });
+
+      const derivEnc = (acc as any)?.secrets?.deriv_token_enc;
+      const dec = derivEnc ? safeDecrypt<any>(derivEnc) : null;
+      const token = String(dec?.token ?? "");
+      if (!token) return res.status(400).json({ error: "missing_token" });
+
+      const c = new DerivClient(token);
+
+      try {
+        await (c as any).connect?.();
+
+        // attempt sell
+        await c.sellContract(contractId, 0);
+
+        // confirm
+        const snap = await c.openContract(contractId).catch(() => null);
+        const sellPrice = Number(snap?.sell_price ?? snap?.bid_price ?? 0);
+        const buyPrice = Number((tr as any)?.entry ?? 0);
+        const profit = Number.isFinite(sellPrice) && Number.isFinite(buyPrice) ? sellPrice - buyPrice : Number(snap?.profit ?? 0);
+
+        const closedAt =
+          snap?.sell_time ? new Date(Number(snap.sell_time) * 1000).toISOString() : new Date().toISOString();
+
+        const nextMeta = {
+          ...(((tr as any)?.meta ?? {}) as any),
+          manual_early_sold: true,
+          manual_early_sold_at: new Date().toISOString(),
+        };
+
+        const { data: updated, error: upErr } = await supabaseAdmin
+          .from("trades")
+          .update({ exit: sellPrice, profit, closed_at: closedAt, meta: nextMeta })
+          .eq("id", tradeId)
+          .eq("user_id", r.user.id)
+          .select("*")
+          .single();
+
+        if (upErr) throw upErr;
+        res.json(updated);
+      } finally {
+        await (c as any).disconnect?.().catch(() => void 0);
+      }
+    }),
+  );
+
   // ===== Journals =====
   router.get(
     api.journals.list.path,
