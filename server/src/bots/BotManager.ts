@@ -1522,9 +1522,12 @@ export class BotManager {
       // ✅ DB/risk gate should NOT be per-config (that blocks other bots).
       // Use a global cap equal to sum of enabled bots' max_open_trades.
       const globalCap = this.computeUserGlobalOpenTradesCap(bot.userId);
-      const gate = await canOpenTrade(bot.userId, {
-        max_open_trades: maxOpenTrades,
-        run_id: bot.runId, // ✅ per-bot
+      const gate = await canOpenTrade({
+        userId: bot.userId,
+        opts: {
+          max_open_trades: maxOpenTrades,
+          run_id: bot.runId, // per-bot
+        },
       });
       if (!gate.ok) return;
 
@@ -2003,15 +2006,19 @@ export class BotManager {
 
     // ✅ also apply the same limit to the global risk gate
     const globalCap = this.computeUserGlobalOpenTradesCap(bot.userId);
-    const gate = await canOpenTrade(bot.userId, {
-      max_open_trades: maxOpenTrades,
-      run_id: bot.runId, // ✅ per-bot
+    const gate = await canOpenTrade({
+      userId: bot.userId,
+      opts: {
+        max_open_trades: maxOpenTrades,
+        run_id: bot.runId, // per-bot
+      },
     });
     if (!gate.ok) {
       this.wsLog(bot.userId, "risk block", {
         reason: gate.reason,
+        runId: bot.runId,
+        cfg_id: cfg.id,
         symbol: cfg.symbol,
-        global_max_open_trades: globalCap,
       });
       return;
     }
