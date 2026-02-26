@@ -27,7 +27,10 @@ const DEFAULT_RULES = {
   percent_risk: 1,
   max_daily_loss: 50,
   max_drawdown: 200,
-  max_open_trades: 3,
+
+  // ✅ was 3 (global cap). Set to 0 to disable by default.
+  max_open_trades: 0,
+
   adaptive_enabled: false,
   adaptive_min_percent: 0.25,
   adaptive_max_percent: 2,
@@ -129,36 +132,29 @@ export async function canOpenTrade(args: {
 
   // Per-bot (run) cap (lets other bots open trades)
   const override = toFiniteNumberOrUndefined(args.opts.max_open_trades);
-  if (typeof override === "number" && override > 0) {
-    const runId = String(args.opts.run_id ?? "").trim();
+  const runId = String(args.opts.run_id ?? "").trim();
 
-    if (!runId) {
-      // No run_id -> fallback to counting all open trades (legacy behavior)
-      if ((totalOpen ?? 0) >= override) return { ok: false, reason: "max open trades reached" };
-      return { ok: true };
-    }
-
-    const { count: runOpen, error: runCountError } = await supabaseAdmin
-      .from("trades")
-      .select("id", { count: "exact", head: true })
-      .eq("user_id", userId)
-      .is("closed_at", null)
-      .contains("meta", { run_id: runId });
-
-    if (runCountError) throw runCountError;
-
-    if ((runOpen ?? 0) >= override) return { ok: false, reason: "max open trades reached" };
+  // If no per-bot override is provided, allow.
+  if (!(typeof override === "number" && override > 0)) {
+    return { ok: true };
   }
 
-  // ✅ IMPORTANT:
-  // We no longer enforce a GLOBAL max_open_trades here.
-  // Open-trade limiting is now handled PER BOT via cfg.params.max_open_trades in BotManager.
-  //
-  // (Old behavior was something like:)
-  // if ((rules.max_open_trades ?? 0) > 0) {
-  //   const openCount = await countOpenTradesForUser(userId);
-  //   if (openCount >= rules.max_open_trades) return { ok: false, reason: "max_open_trades" };
-  // }
+  // Enforce PER-BOT (run_id) cap only.
+  // If run_id is missing, we do NOT apply any cap (so it stays per-bot only).
+  if (!runId) {
+    return { ok: true };
+  }
+
+  const { count: runOpen, error: runCountError } = await supabaseAdmin
+    .from("trades")
+    .select("id", { count: "exact", head: true })
+    .eq("user_id", userId)
+    .is("closed_at", null)
+    .contains("meta", { run_id: runId });
+
+  if (runCountError) throw runCountError;
+
+  if ((runOpen ?? 0) >= override) return { ok: false, reason: "max open trades reached" };
 
   return { ok: true };
 }
