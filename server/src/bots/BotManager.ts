@@ -53,6 +53,9 @@ export class BotManager {
 
   private lastExecutedSignalKeyByCfgKey = new Map<string, string>(); // cfgKey -> last signalKey
 
+  // ✅ NEW: throttle “gate” logs per cfgKey (helps debug 1s mode without spamming)
+  private lastGateLogAtByCfgKey = new Map<string, number>();
+
   private reconcileTimers = new Map<string, NodeJS.Timeout>(); // accountKey -> timer
   private reconcileInFlight = new Set<string>(); // accountKey
   private lastReconcileAt = new Map<string, number>(); // accountId -> epoch ms
@@ -385,6 +388,9 @@ export class BotManager {
     const v = (this.openCounts.get(k) ?? 0) - 1;
     if (v <= 0) this.openCounts.delete(k);
     else this.openCounts.set(k, v);
+
+    // ✅ IMPORTANT: if flat again, allow the next signal to execute
+    this.clearDedupeIfNoOpen(k);
   }
 
   private clearRunOpenCounts(userId: string, runId: string) {
@@ -817,6 +823,9 @@ export class BotManager {
     const v = (this.openCounts.get(cfgKey) ?? 0) - 1;
     if (v <= 0) this.openCounts.delete(cfgKey);
     else this.openCounts.set(cfgKey, v);
+
+    // ✅ IMPORTANT: if flat again, allow the next signal to execute
+    this.clearDedupeIfNoOpen(cfgKey);
   }
 
   private releaseOpenOnceByTradeId(tradeId: string) {
@@ -1439,6 +1448,20 @@ export class BotManager {
     return `${t}::${side}::${reason}`;
   }
 
+  // ✅ allow re-entry on the same signal key only when explicitly enabled in params
+  private allowReentrySameSignal(cfg: BotConfig): boolean {
+    const raw = (cfg?.params as any)?.allow_reentry_same_signal;
+
+    if (typeof raw === "boolean") return raw;
+    if (typeof raw === "number") return raw === 1;
+    if (typeof raw === "string") {
+      const s = raw.trim().toLowerCase();
+      return s === "true" || s === "1" || s === "yes" || s === "y" || s === "on";
+    }
+
+    return false;
+  }
+
   // ✅ Dedup helpers: one execution per candle/signal (per run/config)
   private hasExecutedSignal(cfgKey: string, signalKey: string): boolean {
     if (!cfgKey || !signalKey) return false;
@@ -1448,6 +1471,21 @@ export class BotManager {
   private markSignalExecuted(cfgKey: string, signalKey: string) {
     if (!cfgKey || !signalKey) return;
     this.lastExecutedSignalKeyByCfgKey.set(cfgKey, signalKey);
+  }
+
+  // ✅ NEW: throttled log helper for gate decisions (optional usage)
+  private wsGateLog(cfgKey: string, userId: string, message: string, meta?: any, throttleMs = 5000) {
+    const now = Date.now();
+    const last = this.lastGateLogAtByCfgKey.get(cfgKey) ?? 0;
+    if (now - last < throttleMs) return;
+    this.lastGateLogAtByCfgKey.set(cfgKey, now);
+    this.wsLog(userId, message, meta);
+  }
+
+  // ✅ NEW: when this cfg becomes flat (no opens), clear signal-dedupe latch so it can trade again
+  private clearDedupeIfNoOpen(cfgKey: string) {
+    const open = this.openCounts.get(cfgKey) ?? 0;
+    if (open <= 0) this.lastExecutedSignalKeyByCfgKey.delete(cfgKey);
   }
 
   private async runTickByTick(bot: Running, cfg: BotConfig, epochSec: number, quote: number) {
@@ -1482,42 +1520,131 @@ export class BotManager {
       const signalKey = this.buildTickSignalKey(epochSec, signal);
 
       // --- BEGIN: reuse existing execution section (copied from runConfig) ---
-      if (this.hasExecutedSignal(ck, signalKey)) return;
+      if (this.hasExecutedSignal(ck, signalKey)) {
+        const allow = this.allowReentrySameSignal(cfg);
+        const currentOpen = this.getOpenCount(bot, cfg);
+        if (!allow || currentOpen > 0) {
+          this.wsGateLog(ck, bot.userId, "duplicate signal (tick) (skipping execution)", {
+            runId: bot.runId,
+            cfg_id: cfg.id,
+            symbol: cfg.symbol,
+            signalKey,
+            allow_reentry_same_signal: allow,
+            currentOpen,
+          });
+          return;
+        }
+      }
 
       // spike pause gate
       const sp = this.isSpikePauseActive(ck);
-      if (sp.active) return;
+      if (sp.active) {
+        this.wsGateLog(ck, bot.userId, "spike pause active (tick) (skipping execution)", {
+          runId: bot.runId,
+          cfg_id: cfg.id,
+          symbol: cfg.symbol,
+          remaining_sec: Math.ceil(sp.remainingMs / 1000),
+        });
+        return;
+      }
 
       // spike exhaustion trigger
       const sg = this.getSpikeExhaustionGate(ck, cfg);
       if (!sg.ok && sg.triggered) {
         this.startSpikePause(ck, sg.pauseSec);
+        this.wsGateLog(ck, bot.userId, "spike exhaustion triggered (tick) (pausing execution)", {
+          runId: bot.runId,
+          cfg_id: cfg.id,
+          symbol: cfg.symbol,
+          spike_window_ticks: sg.window,
+          spike_move_threshold: sg.threshold,
+          spike_pause_seconds: sg.pauseSec,
+          observed_move: sg.move,
+          quotes_used: sg.quotesUsed,
+        });
         return;
       }
 
       // tick range gate
       const tg = this.getTickRangeGate(ck, cfg);
-      if (!tg.ok) return;
+      if (!tg.ok) {
+        this.wsGateLog(ck, bot.userId, "tick range filter (tick) (skipping execution)", {
+          runId: bot.runId,
+          cfg_id: cfg.id,
+          symbol: cfg.symbol,
+          reason: tg.reason,
+          tick_window: tg.window,
+          tick_range_min: tg.min,
+          tick_range_max: tg.max,
+          tick_range: tg.range,
+          quotes_used: tg.quotesUsed,
+        });
+        return;
+      }
 
       // cooldown gate
       const cd = this.isInCooldown(ck);
-      if (cd.active) return;
+      if (cd.active) {
+        this.wsGateLog(ck, bot.userId, "cooldown active (tick) (skipping execution)", {
+          runId: bot.runId,
+          cfg_id: cfg.id,
+          symbol: cfg.symbol,
+          remaining_sec: Math.ceil(cd.remainingMs / 1000),
+        });
+        return;
+      }
 
       // min time between trades gate
       const mt = this.isMinTradeIntervalActive(ck, cfg);
-      if (mt.active) return;
+      if (mt.active) {
+        this.wsGateLog(ck, bot.userId, "min-trade-interval active (tick) (skipping execution)", {
+          runId: bot.runId,
+          cfg_id: cfg.id,
+          symbol: cfg.symbol,
+          remaining_sec: Math.ceil(mt.remainingMs / 1000),
+          min_seconds_between_trades: mt.seconds,
+        });
+        return;
+      }
 
       // trades-per-minute gate
       const tf = this.isTradeFrequencyLimited(ck, cfg);
-      if (tf.active) return;
+      if (tf.active) {
+        this.wsGateLog(ck, bot.userId, "trade frequency limit reached (tick) (skipping execution)", {
+          runId: bot.runId,
+          cfg_id: cfg.id,
+          symbol: cfg.symbol,
+          remaining_sec: Math.ceil(tf.remainingMs / 1000),
+          max_trades_per_minute: tf.limit,
+          trades_in_last_60s: tf.count,
+        });
+        return;
+      }
 
       // losing-streak pause gate
       const lp = this.isLossPauseActive(ck);
-      if (lp.active) return;
+      if (lp.active) {
+        this.wsGateLog(ck, bot.userId, "losing-streak pause active (tick) (skipping execution)", {
+          runId: bot.runId,
+          cfg_id: cfg.id,
+          symbol: cfg.symbol,
+          remaining_sec: Math.ceil(lp.remainingMs / 1000),
+        });
+        return;
+      }
 
       const maxOpenTrades = this.parseCfgMaxOpenTrades(cfg);
       const currentOpen = this.getOpenCount(bot, cfg);
-      if (currentOpen >= maxOpenTrades) return;
+      if (currentOpen >= maxOpenTrades) {
+        this.wsGateLog(ck, bot.userId, "open-trade limit reached (tick)", {
+          runId: bot.runId,
+          cfg_id: cfg.id,
+          symbol: cfg.symbol,
+          limit: maxOpenTrades,
+          current: currentOpen,
+        });
+        return;
+      }
 
       // ✅ DB/risk gate should NOT be per-config (that blocks other bots).
       // Use a global cap equal to sum of enabled bots' max_open_trades.
@@ -1525,11 +1652,20 @@ export class BotManager {
       const gate = await canOpenTrade({
         userId: bot.userId,
         opts: {
-          max_open_trades: maxOpenTrades,
+          max_open_trades: globalCap, // ✅ FIX: use global cap here
           run_id: bot.runId, // per-bot
         },
       });
-      if (!gate.ok) return;
+      if (!gate.ok) {
+        this.wsGateLog(ck, bot.userId, "risk block (tick)", {
+          reason: gate.reason,
+          runId: bot.runId,
+          cfg_id: cfg.id,
+          symbol: cfg.symbol,
+          globalCap,
+        });
+        return;
+      }
 
       const rules = await getRiskRules(bot.userId);
       const stake = computeStake(rules, 1000);
@@ -1873,16 +2009,24 @@ export class BotManager {
 
     const ck = this.cfgKey(bot, cfg);
 
-    // ✅ Dedup: don't execute more than once per same candle/signal
+    // ✅ Dedup (modified): allow re-entry if enabled AND no open trade currently
     const signalKey = this.buildSignalKey(candles, signal);
     if (this.hasExecutedSignal(ck, signalKey)) {
-      this.wsLog(bot.userId, "duplicate signal (skipping execution)", {
-        runId: bot.runId,
-        cfg_id: cfg.id,
-        symbol: cfg.symbol,
-        signalKey,
-      });
-      return;
+      const allow = this.allowReentrySameSignal(cfg);
+      const currentOpen = this.getOpenCount(bot, cfg);
+
+      if (!allow || currentOpen > 0) {
+        this.wsLog(bot.userId, "duplicate signal (skipping execution)", {
+          runId: bot.runId,
+          cfg_id: cfg.id,
+          symbol: cfg.symbol,
+          signalKey,
+          allow_reentry_same_signal: allow,
+          currentOpen,
+        });
+        return;
+      }
+      // allow re-entry when previous position is already closed for this cfg
     }
 
     // ✅ spike exhaustion pause gate (execution only; does not block signal generation)
@@ -1991,7 +2135,7 @@ export class BotManager {
     }
 
     // Enforce per-bot max open trades
-    const maxOpenTrades = Math.max(1, Number(cfg.params?.max_open_trades ?? 5));
+    const maxOpenTrades = this.parseCfgMaxOpenTrades(cfg);
     const currentOpen = this.getOpenCount(bot, cfg);
     if (currentOpen >= maxOpenTrades) {
       this.wsLog(bot.userId, "open-trade limit reached", {
@@ -2009,7 +2153,7 @@ export class BotManager {
     const gate = await canOpenTrade({
       userId: bot.userId,
       opts: {
-        max_open_trades: maxOpenTrades,
+        max_open_trades: globalCap, // ✅ FIX: use global cap here
         run_id: bot.runId, // per-bot
       },
     });
@@ -2019,6 +2163,7 @@ export class BotManager {
         runId: bot.runId,
         cfg_id: cfg.id,
         symbol: cfg.symbol,
+        globalCap,
       });
       return;
     }
@@ -2137,10 +2282,7 @@ export class BotManager {
         setTimeout(async () => {
           const tradeId = String(insert?.data?.id ?? "");
           try {
-            if (!contractId) {
-              this.wsLog(bot.userId, "live finalize: missing contract_id");
-              return;
-            }
+            if (!contractId) return;
 
             // If already closed (e.g., early-sold), skip finalize update
             if (tradeId) {
@@ -2300,6 +2442,7 @@ function durationToMs(n: number, u: "m" | "h" | "d" | "t"): number {
   if (!Number.isFinite(n) || n <= 0) return 0;
   switch (u) {
     case "t": // ticks: approximate as 1s per tick for release purposes
+    case "s": // seconds
       return n * 1000;
     case "m":
       return n * 60_000;
