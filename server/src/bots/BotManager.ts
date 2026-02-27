@@ -1701,7 +1701,7 @@ export class BotManager {
         const contractType = signal.side === "buy" ? "CALL" : "PUT";
         const stakeParam = Number(cfg.params?.stake ?? stake);
         const dur = Number(cfg.params?.duration ?? 5);
-        const durUnit = (cfg.params?.duration_unit ?? "m") as "m" | "h" | "d" | "t";
+        const durUnit = (cfg.params?.duration_unit ?? "m") as "m" | "h" | "d" | "t" | "s";
 
         this.incOpen(bot, cfg);
         try {
@@ -2438,7 +2438,7 @@ export class BotManager {
   }
 }
 
-function durationToMs(n: number, u: "m" | "h" | "d" | "t"): number {
+function durationToMs(n: number, u: "m" | "h" | "d" | "t" | "s"): number {
   if (!Number.isFinite(n) || n <= 0) return 0;
   switch (u) {
     case "t": // ticks: approximate as 1s per tick for release purposes
