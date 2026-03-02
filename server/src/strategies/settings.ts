@@ -273,6 +273,17 @@ const STRATEGY_ID_ALIASES: Record<string, string> = {
   fvgRetracement: "fvg_retracement",
   rangeMeanReversion: "range_mean_reversion",
   volatilityBreak: "vol_break",
+
+  // Added aliases for new strategies to match shared/strategySettings.ts
+  aroonTrend: "aroon_trend",
+  bollingerSnap: "bollinger_snap",
+  confluenceReversal: "confluence_reversal",
+  dpoCycleReversal: "dpo_cycle_reversal",
+  dualMomentum: "dual_momentum",
+  macdFlip: "macd_flip",
+  maPullback: "ma_pullback",
+  rocBurst: "roc_burst",
+  stochSnap: "stoch_snap",
 };
 
 function normalizeStrategyId(id: string): string {
