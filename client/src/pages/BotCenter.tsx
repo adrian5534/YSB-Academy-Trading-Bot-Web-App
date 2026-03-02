@@ -1024,7 +1024,7 @@ export default function BotCenter() {
             type="button"
             className="w-full rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted disabled:opacity-50"
             onClick={savePrimaryPresetAs}
-            disabled={!strategyId}
+            disabled={!strategyId || (showSettings && !editingBotId)}
           >
             Save preset as…
           </button>
@@ -1215,7 +1215,7 @@ export default function BotCenter() {
               type="button"
               className="w-full rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted disabled:opacity-50"
               onClick={() => saveCardPresetAs(b)}
-              disabled={!b.strategy_id}
+              disabled={!b.strategy_id || (showSettings && editingBotId === String(b.id))}
             >
               Save preset as…
             </button>

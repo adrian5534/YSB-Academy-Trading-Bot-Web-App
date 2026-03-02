@@ -6,7 +6,6 @@ import { requireProForPaperLive } from "./middleware/subscription";
 import { DerivClient } from "./deriv/DerivClient";
 import { encryptJson, decryptJson } from "./crypto/secrets";
 import { strategies } from "./strategies";
-import { strategies } from "./bots/BotManager";
 import type { WsHub } from "./ws/hub";
 import { parseCsv, runBacktest } from "./backtests/runBacktest";
 import { requireStripe } from "./stripe/stripe";
