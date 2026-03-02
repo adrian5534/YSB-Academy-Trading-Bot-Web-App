@@ -38,6 +38,14 @@ const zRiskRules = z.object({
   adaptive_lookback: z.number().int().min(0).default(20),
 });
 
+const zStrategyPresetName = z
+  .string()
+  .trim()
+  .min(1)
+  .max(80)
+  .default("default")
+  .transform((v) => v || "default");
+
 type AnyFn = (req: any, res: any, next: any) => any;
 
 function asyncRoute(fn: AnyFn) {
@@ -673,12 +681,47 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
     asyncRoute(async (req, res) => {
       const r = req as AuthedRequest;
       const accountId = String(req.params.accountId);
+      const strategyId = req.query.strategy_id ? String(req.query.strategy_id) : "";
+      const symbol = req.query.symbol ? String(req.query.symbol) : "";
+      const timeframe = req.query.timeframe ? String(req.query.timeframe) : "";
+      const presetName = req.query.preset_name ? String(req.query.preset_name) : "";
 
-      const { data, error } = await supabaseAdmin
-        .from("strategy_settings")
+      // Prefer new table: strategy_presets (multi-save, per user)
+      let q = supabaseAdmin
+        .from("strategy_presets")
         .select("*")
         .eq("user_id", r.user.id)
         .eq("account_id", accountId);
+
+      if (strategyId) q = q.eq("strategy_id", strategyId);
+      if (symbol) q = q.eq("symbol", symbol);
+      if (timeframe) q = q.eq("timeframe", timeframe);
+      if (presetName) q = q.eq("preset_name", presetName);
+
+      let { data, error } = await q.order("updated_at", { ascending: false });
+
+      // Fallback to legacy table if new table does not exist yet
+      if (error && String((error as any)?.code) === "42P01") {
+        let legacyQ = supabaseAdmin
+          .from("strategy_settings")
+          .select("*")
+          .eq("user_id", r.user.id)
+          .eq("account_id", accountId);
+
+        if (strategyId) legacyQ = legacyQ.eq("strategy_id", strategyId);
+        if (symbol) legacyQ = legacyQ.eq("symbol", symbol);
+        if (timeframe) legacyQ = legacyQ.eq("timeframe", timeframe);
+
+        const legacy = await legacyQ;
+        if (legacy.error) throw legacy.error;
+
+        data = (legacy.data ?? []).map((row: any) => ({
+          ...row,
+          preset_name: "default",
+        }));
+        error = null;
+      }
+
       if (error) throw error;
 
       res.json(api.strategies.settingsForAccount.responses[200].parse(data ?? []));
@@ -691,22 +734,27 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
     asyncRoute(async (req, res) => {
       const r = req as AuthedRequest;
 
-      // 1) Validate safely (400 instead of throw/500)
       const parsed = api.strategies.setSettings.input.safeParse(req.body);
       if (!parsed.success) {
         return res.status(400).json({ error: "Invalid request", details: parsed.error.issues });
       }
       const body = parsed.data;
 
-      // 2) Reject unknown strategies early
-      if (!strategies.some((s) => s.id === body.strategy_id)) {
+      const presetName = zStrategyPresetName.parse(req.body?.preset_name ?? "default");
+
+      interface StrategyDef {
+        id: string;
+      }
+
+      const strategyList = strategies as ReadonlyArray<StrategyDef>;
+
+      if (!strategyList.some((s: StrategyDef) => s.id === body.strategy_id)) {
         return res.status(400).json({
           error: "Invalid request",
           details: [{ path: ["strategy_id"], message: `Unknown strategy_id: ${body.strategy_id}` }],
         });
       }
 
-      // 3) Ensure account belongs to current user
       const { data: account, error: accountErr } = await supabaseAdmin
         .from("accounts")
         .select("id")
@@ -715,7 +763,7 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
         .maybeSingle();
 
       if (accountErr) {
-        console.error("strategy_settings account lookup failed:", {
+        console.error("strategy settings account lookup failed:", {
           code: (accountErr as any)?.code,
           message: accountErr.message,
           details: (accountErr as any)?.details,
@@ -731,7 +779,21 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
         });
       }
 
-      const row = {
+      // New row model (supports multiple named presets)
+      const presetRow = {
+        user_id: r.user.id,
+        account_id: body.account_id,
+        symbol: body.symbol,
+        timeframe: body.timeframe,
+        strategy_id: body.strategy_id,
+        preset_name: presetName,
+        params: body.params,
+        enabled: body.enabled ?? true,
+        updated_at: new Date().toISOString(),
+      };
+
+      // Legacy row model (single saved config)
+      const legacyRow = {
         user_id: r.user.id,
         account_id: body.account_id,
         symbol: body.symbol,
@@ -741,37 +803,74 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
         enabled: body.enabled ?? true,
       };
 
-      const tryUpsert = async (onConflict: string) => {
-        const { error } = await supabaseAdmin.from("strategy_settings").upsert(row, { onConflict });
-        return error;
-      };
+      // Try new table first
+      let { error: dbError } = await supabaseAdmin.from("strategy_presets").upsert(presetRow, {
+        onConflict: "user_id,account_id,symbol,timeframe,strategy_id,preset_name",
+      });
 
-      // 4) Try newer schema unique key
-      let dbError = await tryUpsert("user_id,account_id,symbol,timeframe,strategy_id");
-
-      // 5) Fallback for older schema (without user_id)
+      // Fallback conflict key for old migrations on strategy_presets
       if (dbError && String((dbError as any)?.code) === "42P10") {
-        dbError = await tryUpsert("account_id,symbol,timeframe,strategy_id");
+        const retry = await supabaseAdmin.from("strategy_presets").upsert(presetRow, {
+          onConflict: "account_id,symbol,timeframe,strategy_id,preset_name",
+        });
+        dbError = retry.error;
+      }
+
+      // If new table missing, fallback to legacy table
+      if (dbError && String((dbError as any)?.code) === "42P01") {
+        const tryLegacy = async (onConflict: string) =>
+          supabaseAdmin.from("strategy_settings").upsert(legacyRow, { onConflict });
+
+        let legacy = await tryLegacy("user_id,account_id,symbol,timeframe,strategy_id");
+        if (legacy.error && String((legacy.error as any)?.code) === "42P10") {
+          legacy = await tryLegacy("account_id,symbol,timeframe,strategy_id");
+        }
+        if (legacy.error) {
+          console.error("strategy_settings legacy upsert failed:", legacy.error);
+          return res.status(500).json({ error: "Internal Server Error" });
+        }
+
+        return res.json({ ok: true, preset_name: "default", storage: "strategy_settings" });
       }
 
       if (dbError) {
-        console.error("strategy_settings upsert failed:", {
+        console.error("strategy_presets upsert failed:", {
           code: (dbError as any)?.code,
           message: dbError.message,
           details: (dbError as any)?.details,
           hint: (dbError as any)?.hint,
-          payload: {
-            user_id: r.user.id,
-            account_id: body.account_id,
-            symbol: body.symbol,
-            timeframe: body.timeframe,
-            strategy_id: body.strategy_id,
-          },
         });
         return res.status(500).json({ error: "Internal Server Error" });
       }
 
-      return res.json({ ok: true });
+      return res.json({ ok: true, preset_name: presetName, storage: "strategy_presets" });
+    }),
+  );
+
+  // Optional: delete one named preset
+  router.delete(
+    "/api/strategies/settings/:accountId/:strategyId/:symbol/:timeframe/:presetName",
+    requireUser,
+    asyncRoute(async (req, res) => {
+      const r = req as AuthedRequest;
+      const accountId = String(req.params.accountId);
+      const strategyId = String(req.params.strategyId);
+      const symbol = String(req.params.symbol);
+      const timeframe = String(req.params.timeframe);
+      const presetName = zStrategyPresetName.parse(req.params.presetName);
+
+      const { error } = await supabaseAdmin
+        .from("strategy_presets")
+        .delete()
+        .eq("user_id", r.user.id)
+        .eq("account_id", accountId)
+        .eq("strategy_id", strategyId)
+        .eq("symbol", symbol)
+        .eq("timeframe", timeframe)
+        .eq("preset_name", presetName);
+
+      if (error && String((error as any)?.code) !== "42P01") throw error;
+      res.json({ ok: true });
     }),
   );
 
