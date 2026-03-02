@@ -827,7 +827,10 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
         }
         if (legacy.error) {
           console.error("strategy_settings legacy upsert failed:", legacy.error);
-          return res.status(500).json({ error: "Internal Server Error" });
+          return res.status(500).json({ 
+            error: "Internal Server Error", 
+            details: `Legacy upsert failed: ${legacy.error.message} (code: ${(legacy.error as any)?.code})` 
+          });
         }
 
         return res.json({ ok: true, preset_name: "default", storage: "strategy_settings" });
@@ -840,7 +843,10 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
           details: (dbError as any)?.details,
           hint: (dbError as any)?.hint,
         });
-        return res.status(500).json({ error: "Internal Server Error" });
+        return res.status(500).json({ 
+          error: "Internal Server Error", 
+          details: `Preset upsert failed: ${dbError.message} (code: ${(dbError as any)?.code})` 
+        });
       }
 
       return res.json({ ok: true, preset_name: presetName, storage: "strategy_presets" });
