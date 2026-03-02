@@ -110,6 +110,14 @@ type StrategyMeta = {
   default_params?: Record<string, any>;
 };
 
+type StrategyPresetRow = {
+  preset_name?: string;
+  params?: Record<string, any>;
+  strategy_id?: string;
+  symbol?: string;
+  timeframe?: string;
+};
+
 function instrumentMarket(i: any): string {
   return String(i?.market_display_name ?? i?.market ?? "Other");
 }
@@ -582,6 +590,7 @@ export default function BotCenter() {
           strategy_id: b.strategy_id,
           params: b.params,
           enabled: false,
+          preset_name: getCardPreset(String(b.id)),
         }),
       }).catch(() => void 0);
 
@@ -697,6 +706,167 @@ export default function BotCenter() {
     })();
   }, [accountId, symbol, timeframe, strategyId, setParams]);
 
+  const [primaryPresetName, setPrimaryPresetName] = usePersistedState<string>("bot:primaryPresetName", "default");
+  const [primaryPresetNames, setPrimaryPresetNames] = reactUseState<string[]>(["default"]);
+
+  const [cardPresetName, setCardPresetName] = usePersistedState<Record<string, string>>("bot:cardPresetName", {});
+  const [cardPresetNames, setCardPresetNames] = reactUseState<Record<string, string[]>>({});
+
+  const getCardPreset = (id: string) => cardPresetName[id] ?? "default";
+  const setCardPreset = (id: string, name: string) =>
+    setCardPresetName((prev: any) => ({ ...(prev ?? {}), [id]: name || "default" }));
+
+  // ✅ fetch preset rows from server
+  const fetchPresetRows = async (account_id: string, symbol: string, timeframe: string, strategy_id: string) => {
+    const base = api.strategies.settingsForAccount.path.replace(":accountId", account_id);
+    const qs = new URLSearchParams({ strategy_id, symbol, timeframe });
+    const r = await apiFetch(`${base}?${qs.toString()}`);
+    const rows = (await r.json()) as StrategyPresetRow[];
+    return Array.isArray(rows) ? rows : [];
+  };
+
+  const refreshPrimaryPresets = async () => {
+    if (!accountId || !strategyId) return setPrimaryPresetNames(["default"]);
+    try {
+      const rows = await fetchPresetRows(accountId, symbol, timeframe, strategyId);
+      const names = Array.from(new Set(rows.map((x) => String(x.preset_name || "default")))).sort();
+      setPrimaryPresetNames(names.length ? names : ["default"]);
+      if (!names.includes(primaryPresetName)) setPrimaryPresetName("default");
+    } catch {
+      setPrimaryPresetNames(["default"]);
+    }
+  };
+
+  const loadPrimaryPreset = async (name: string) => {
+    if (!accountId || !strategyId) return;
+    try {
+      const rows = await fetchPresetRows(accountId, symbol, timeframe, strategyId);
+      const found = rows.find((x) => String(x.preset_name || "default") === name);
+      if (found?.params) {
+        setParams((p: StrategyParams) => ({ ...p, ...(found.params as any) }));
+        setPrimaryPresetName(name);
+        toast({ title: "Preset loaded", description: name });
+      }
+    } catch (e: any) {
+      toast({ title: "Load failed", description: String(e?.message ?? e), variant: "destructive" });
+    }
+  };
+
+  const savePrimaryPresetAs = async () => {
+    if (!accountId || !strategyId) return;
+    const nextName = (window.prompt("Preset name", primaryPresetName || "default") || "").trim();
+    if (!nextName) return;
+    try {
+      await apiFetch(api.strategies.setSettings.path, {
+        method: "POST",
+        body: JSON.stringify({
+          account_id: accountId,
+          symbol,
+          timeframe,
+          strategy_id: strategyId,
+          params,
+          enabled: false,
+          preset_name: nextName,
+        }),
+      });
+      setPrimaryPresetName(nextName);
+      await refreshPrimaryPresets();
+      toast({ title: "Preset saved", description: nextName });
+    } catch (e: any) {
+      toast({ title: "Save failed", description: String(e?.message ?? e), variant: "destructive" });
+    }
+  };
+
+  const refreshCardPresets = async (b: any) => {
+    const id = String(b?.id ?? "");
+    if (!id || !b?.account_id || !b?.strategy_id) return;
+    try {
+      const rows = await fetchPresetRows(String(b.account_id), String(b.symbol), String(b.timeframe), String(b.strategy_id));
+      const names = Array.from(new Set(rows.map((x) => String(x.preset_name || "default")))).sort();
+      setCardPresetNames((prev) => ({ ...prev, [id]: names.length ? names : ["default"] }));
+      if (!(names.length ? names : ["default"]).includes(getCardPreset(id))) setCardPreset(id, "default");
+    } catch {
+      setCardPresetNames((prev) => ({ ...prev, [id]: ["default"] }));
+    }
+  };
+
+  const loadCardPreset = async (b: any, name: string) => {
+    try {
+      const rows = await fetchPresetRows(String(b.account_id), String(b.symbol), String(b.timeframe), String(b.strategy_id));
+      const found = rows.find((x) => String(x.preset_name || "default") === name);
+      if (found?.params) {
+        updateBot(String(b.id), { params: { ...(b.params ?? {}), ...(found.params as any) } });
+        setCardPreset(String(b.id), name);
+        toast({ title: "Preset loaded", description: `${name}` });
+      }
+    } catch (e: any) {
+      toast({ title: "Load failed", description: String(e?.message ?? e), variant: "destructive" });
+    }
+  };
+
+  const saveCardPresetAs = async (b: any) => {
+    const current = getCardPreset(String(b.id));
+    const nextName = (window.prompt("Preset name", current || "default") || "").trim();
+    if (!nextName) return;
+    try {
+      await apiFetch(api.strategies.setSettings.path, {
+        method: "POST",
+        body: JSON.stringify({
+          account_id: b.account_id,
+          symbol: b.symbol,
+          timeframe: b.timeframe,
+          strategy_id: b.strategy_id,
+          params: b.params,
+          enabled: false,
+          preset_name: nextName,
+        }),
+      });
+      setCardPreset(String(b.id), nextName);
+      await refreshCardPresets(b);
+      toast({ title: "Preset saved", description: nextName });
+    } catch (e: any) {
+      toast({ title: "Save failed", description: String(e?.message ?? e), variant: "destructive" });
+    }
+  };
+
+  // cleanup removed card preset state
+  useEffect(() => {
+    const aliveIds = new Set((bots ?? []).map((b: any) => String(b?.id ?? "")));
+    setCardPresetName((prev: any) => {
+      const p = prev ?? {};
+      const next: Record<string, string> = {};
+      let changed = false;
+      for (const [k, v] of Object.entries(p)) {
+        if (aliveIds.has(k)) next[k] = String(v);
+        else changed = true;
+      }
+      return changed ? next : p;
+    });
+    setCardPresetNames((prev: any) => {
+      const p = prev ?? {};
+      const next: Record<string, string[]> = {};
+      let changed = false;
+      for (const [k, v] of Object.entries(p)) {
+        if (aliveIds.has(k)) next[k] = Array.isArray(v) ? (v as string[]) : ["default"];
+        else changed = true;
+      }
+      return changed ? next : p;
+    });
+  }, [bots, setCardPresetName]);
+
+  // preset list refresh (primary + cards)
+  useEffect(() => {
+    void refreshPrimaryPresets();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accountId, symbol, timeframe, strategyId]);
+
+  useEffect(() => {
+    (bots ?? []).forEach((b: any) => {
+      if (b?.id && b?.account_id && b?.strategy_id) void refreshCardPresets(b);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bots]);
+
   // Persist helper (do not enable globally)
   const persistSettings = async (next = params, enabled = false) => {
     if (!accountId) return;
@@ -709,7 +879,8 @@ export default function BotCenter() {
           timeframe,
           strategy_id: strategyId,
           params: next,
-          enabled, // keep false to avoid starting all on server
+          enabled,
+          preset_name: primaryPresetName || "default",
         }),
       });
     } catch {
@@ -827,6 +998,36 @@ export default function BotCenter() {
               ))}
             </select>
           </div>
+
+          {/* Presets (primary) */}
+          <div className="grid grid-cols-3 gap-2">
+            <select
+              className="col-span-2 rounded-lg border border-border bg-background px-3 py-2"
+              value={primaryPresetName}
+              onChange={(e) => setPrimaryPresetName(e.target.value)}
+              disabled={!strategyId}
+            >
+              {(primaryPresetNames.length ? primaryPresetNames : ["default"]).map((n) => (
+                <option key={n} value={n}>{n}</option>
+              ))}
+            </select>
+            <button
+              type="button"
+              className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted"
+              onClick={() => loadPrimaryPreset(primaryPresetName)}
+              disabled={!strategyId}
+            >
+              Load
+            </button>
+          </div>
+          <button
+            type="button"
+            className="w-full rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted disabled:opacity-50"
+            onClick={savePrimaryPresetAs}
+            disabled={!strategyId}
+          >
+            Save preset as…
+          </button>
 
           {/* ✅ Controls ABOVE start/stop so users can set them before starting (PRIMARY) */}
           <div className="w-full space-y-3">
@@ -985,6 +1186,39 @@ export default function BotCenter() {
                 ))}
               </select>
             </div>
+
+            {/* Presets (card) */}
+            <div className="grid grid-cols-3 gap-2">
+              <select
+                className="col-span-2 rounded-lg border border-border bg-background px-3 py-2"
+                value={getCardPreset(String(b.id))}
+                onChange={(e) => setCardPreset(String(b.id), e.target.value)}
+                disabled={!b.strategy_id}
+              >
+                {((cardPresetNames[String(b.id)] ?? ["default"]).length
+                  ? (cardPresetNames[String(b.id)] ?? ["default"])
+                  : ["default"]
+                ).map((n) => (
+                  <option key={n} value={n}>{n}</option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted"
+                onClick={() => loadCardPreset(b, getCardPreset(String(b.id)))}
+                disabled={!b.strategy_id}
+              >
+                Load
+              </button>
+            </div>
+            <button
+              type="button"
+              className="w-full rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted disabled:opacity-50"
+              onClick={() => saveCardPresetAs(b)}
+              disabled={!b.strategy_id}
+            >
+              Save preset as…
+            </button>
 
             {/* Controls ABOVE start/stop so users can set them before starting */}
             <div className="w-full space-y-3">
