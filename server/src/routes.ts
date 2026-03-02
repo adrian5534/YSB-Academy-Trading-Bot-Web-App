@@ -12,6 +12,7 @@ import { requireStripe } from "./stripe/stripe";
 import { env } from "./env";
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
+import { BotManager } from "./bots/BotManager";
 
 /**
  * Risk rules (global). Kept for backwards compatibility:
