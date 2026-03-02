@@ -5,8 +5,7 @@ import { requireUser, type AuthedRequest } from "./middleware/auth";
 import { requireProForPaperLive } from "./middleware/subscription";
 import { DerivClient } from "./deriv/DerivClient";
 import { encryptJson, decryptJson } from "./crypto/secrets";
-import { strategies } from "./strategies";
-import { BotManager } from "./bots/BotManager";
+import { strategies } from "./bots/BotManager";
 import type { WsHub } from "./ws/hub";
 import { parseCsv, runBacktest } from "./backtests/runBacktest";
 import { requireStripe } from "./stripe/stripe";
@@ -856,6 +855,33 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
   // Optional: delete one named preset
   router.delete(
     "/api/strategies/settings/:accountId/:strategyId/:symbol/:timeframe/:presetName",
+    requireUser,
+    asyncRoute(async (req, res) => {
+      const r = req as AuthedRequest;
+      const accountId = String(req.params.accountId);
+      const strategyId = String(req.params.strategyId);
+      const symbol = String(req.params.symbol);
+      const timeframe = String(req.params.timeframe);
+      const presetName = zStrategyPresetName.parse(req.params.presetName);
+
+      const { error } = await supabaseAdmin
+        .from("strategy_presets")
+        .delete()
+        .eq("user_id", r.user.id)
+        .eq("account_id", accountId)
+        .eq("strategy_id", strategyId)
+        .eq("symbol", symbol)
+        .eq("timeframe", timeframe)
+        .eq("preset_name", presetName);
+
+      if (error && String((error as any)?.code) !== "42P01") throw error;
+      res.json({ ok: true });
+    }),
+  );
+
+  // POST alias for hosts that block DELETE
+  router.post(
+    "/api/strategies/settings/:accountId/:strategyId/:symbol/:timeframe/:presetName/delete",
     requireUser,
     asyncRoute(async (req, res) => {
       const r = req as AuthedRequest;
