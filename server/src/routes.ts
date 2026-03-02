@@ -780,6 +780,7 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
       }
 
       // New row model (supports multiple named presets)
+      // Note: Removed 'enabled' to avoid schema mismatch if the column doesn't exist in 'strategy_presets'
       const presetRow = {
         user_id: r.user.id,
         account_id: body.account_id,
@@ -788,11 +789,10 @@ export function registerRoutes(app: express.Express, hub: WsHub) {
         strategy_id: body.strategy_id,
         preset_name: presetName,
         params: body.params,
-        enabled: body.enabled ?? true,
         updated_at: new Date().toISOString(),
       };
 
-      // Legacy row model (single saved config)
+      // Legacy row model (single saved config) - retains 'enabled' for backwards compatibility
       const legacyRow = {
         user_id: r.user.id,
         account_id: body.account_id,
