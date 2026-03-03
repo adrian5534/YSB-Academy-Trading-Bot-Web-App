@@ -737,6 +737,36 @@ export default function BotCenter() {
     }
   };
 
+  const refreshCardPresets = async (b: any) => {
+    const id = String(b?.id ?? "");
+    const account_id = String(b?.account_id ?? "");
+    const strategy_id = String(b?.strategy_id ?? "");
+    const sym = String(b?.symbol ?? "");
+    const tf = String(b?.timeframe ?? "");
+
+    if (!id || !account_id || !strategy_id || !sym || !tf) return;
+
+    try {
+      const rows = await fetchPresetRows(account_id, sym, tf, strategy_id);
+      const names = Array.from(new Set(rows.map((x) => String(x.preset_name || "default")))).sort();
+
+      setCardPresetNames((prev: any) => ({
+        ...(prev ?? {}),
+        [id]: names.length ? names : ["default"],
+      }));
+
+      const current = getCardPreset(id);
+      if (names.length && !names.includes(current)) setCardPreset(id, "default");
+      if (!names.length && current !== "default") setCardPreset(id, "default");
+    } catch {
+      setCardPresetNames((prev: any) => ({
+        ...(prev ?? {}),
+        [id]: ["default"],
+      }));
+      setCardPreset(id, "default");
+    }
+  };
+
   const loadPrimaryPreset = async (name: string) => {
     if (!accountId || !strategyId) return;
     try {
@@ -777,30 +807,40 @@ export default function BotCenter() {
     }
   };
 
-  const refreshCardPresets = async (b: any) => {
-    const id = String(b?.id ?? "");
-    if (!id || !b?.account_id || !b?.strategy_id) return;
-    try {
-      const rows = await fetchPresetRows(String(b.account_id), String(b.symbol), String(b.timeframe), String(b.strategy_id));
-      const names = Array.from(new Set(rows.map((x) => String(x.preset_name || "default")))).sort();
-      setCardPresetNames((prev) => ({ ...prev, [id]: names.length ? names : ["default"] }));
-      if (!(names.length ? names : ["default"]).includes(getCardPreset(id))) setCardPreset(id, "default");
-    } catch {
-      setCardPresetNames((prev) => ({ ...prev, [id]: ["default"] }));
-    }
+  const deletePresetOnServer = async (
+    account_id: string,
+    strategy_id: string,
+    symbol: string,
+    timeframe: string,
+    preset_name: string,
+  ) => {
+    const path =
+      `/api/strategies/settings/${encodeURIComponent(account_id)}` +
+      `/${encodeURIComponent(strategy_id)}` +
+      `/${encodeURIComponent(symbol)}` +
+      `/${encodeURIComponent(timeframe)}` +
+      `/${encodeURIComponent(preset_name)}/delete`;
+
+    // POST alias for hosts that block DELETE
+    await apiFetch(path, { method: "POST" });
   };
 
-  const loadCardPreset = async (b: any, name: string) => {
+  const deletePrimaryPreset = async () => {
+    if (!accountId || !strategyId) return;
+    const name = String(primaryPresetName || "default");
+    if (name === "default") {
+      toast({ title: "Cannot delete default preset", variant: "destructive" });
+      return;
+    }
+    if (!window.confirm(`Delete preset "${name}"?`)) return;
+
     try {
-      const rows = await fetchPresetRows(String(b.account_id), String(b.symbol), String(b.timeframe), String(b.strategy_id));
-      const found = rows.find((x) => String(x.preset_name || "default") === name);
-      if (found?.params) {
-        updateBot(String(b.id), { params: { ...(b.params ?? {}), ...(found.params as any) } });
-        setCardPreset(String(b.id), name);
-        toast({ title: "Preset loaded", description: `${name}` });
-      }
+      await deletePresetOnServer(accountId, strategyId, symbol, timeframe, name);
+      setPrimaryPresetName("default");
+      await refreshPrimaryPresets();
+      toast({ title: "Preset deleted", description: name });
     } catch (e: any) {
-      toast({ title: "Load failed", description: String(e?.message ?? e), variant: "destructive" });
+      toast({ title: "Delete failed", description: String(e?.message ?? e), variant: "destructive" });
     }
   };
 
@@ -829,7 +869,28 @@ export default function BotCenter() {
     }
   };
 
-  // cleanup removed card preset state
+  const deleteCardPreset = async (b: any) => {
+    const id = String(b?.id ?? "");
+    if (!id || !b?.account_id || !b?.strategy_id) return;
+
+    const name = String(getCardPreset(id) || "default");
+    if (name === "default") {
+      toast({ title: "Cannot delete default preset", variant: "destructive" });
+      return;
+    }
+    if (!window.confirm(`Delete preset "${name}"?`)) return;
+
+    try {
+      await deletePresetOnServer(String(b.account_id), String(b.strategy_id), String(b.symbol), String(b.timeframe), name);
+      setCardPreset(id, "default");
+      await refreshCardPresets(b);
+      toast({ title: "Preset deleted", description: name });
+    } catch (e: any) {
+      toast({ title: "Delete failed", description: String(e?.message ?? e), variant: "destructive" });
+    }
+  };
+
+  // cleanup filter entries for removed cards
   useEffect(() => {
     const aliveIds = new Set((bots ?? []).map((b: any) => String(b?.id ?? "")));
     setCardPresetName((prev: any) => {
@@ -888,6 +949,36 @@ export default function BotCenter() {
     }
   };
 
+  function loadCardPreset(b: any, presetName: string): void {
+    void (async () => {
+      const id = String(b?.id ?? "");
+      const account_id = String(b?.account_id ?? "");
+      const strategy_id = String(b?.strategy_id ?? "");
+      const sym = String(b?.symbol ?? "");
+      const tf = String(b?.timeframe ?? "");
+      const name = String(presetName || "default");
+
+      if (!id || !account_id || !strategy_id || !sym || !tf) return;
+
+      try {
+        const rows = await fetchPresetRows(account_id, sym, tf, strategy_id);
+        const found = rows.find((x) => String(x?.preset_name || "default") === name);
+
+        if (!found?.params) {
+          toast({ title: "Preset not found", description: name, variant: "destructive" });
+          return;
+        }
+
+        // Merge into existing params so execution fields stay present even if older presets lack some keys
+        updateBot(id, { params: { ...(b?.params ?? {}), ...(found.params as any) } });
+        setCardPreset(id, name);
+
+        toast({ title: "Preset loaded", description: name });
+      } catch (e: any) {
+        toast({ title: "Load failed", description: String(e?.message ?? e), variant: "destructive" });
+      }
+    })();
+  }
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -1000,7 +1091,7 @@ export default function BotCenter() {
           </div>
 
           {/* Presets (primary) */}
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-4 gap-2">
             <select
               className="col-span-2 rounded-lg border border-border bg-background px-3 py-2"
               value={primaryPresetName}
@@ -1018,6 +1109,14 @@ export default function BotCenter() {
               disabled={!strategyId}
             >
               Load
+            </button>
+            <button
+              type="button"
+              className="rounded-lg border border-border px-3 py-2 text-sm text-rose-500 hover:bg-rose-500/10 disabled:opacity-50"
+              onClick={deletePrimaryPreset}
+              disabled={!strategyId || primaryPresetName === "default"}
+            >
+              Delete
             </button>
           </div>
           <button
@@ -1188,7 +1287,7 @@ export default function BotCenter() {
             </div>
 
             {/* Presets (card) */}
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-4 gap-2">
               <select
                 className="col-span-2 rounded-lg border border-border bg-background px-3 py-2"
                 value={getCardPreset(String(b.id))}
@@ -1209,6 +1308,14 @@ export default function BotCenter() {
                 disabled={!b.strategy_id}
               >
                 Load
+              </button>
+              <button
+                type="button"
+                className="rounded-lg border border-border px-3 py-2 text-sm text-rose-500 hover:bg-rose-500/10 disabled:opacity-50"
+                onClick={() => deleteCardPreset(b)}
+                disabled={!b.strategy_id || getCardPreset(String(b.id)) === "default"}
+              >
+                Delete
               </button>
             </div>
             <button
